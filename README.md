@@ -5,11 +5,10 @@ Universal Memory Middleware for OpenClaw and Cognee.
 ## Features
 - **Decoupled Architecture**: Thin OpenClaw plugin + Rich Python middleware.
 - **Cognee Integration**: Native graph-based memory and context extraction.
-- **2-Layer Caching**: High-performance LRU cache for prompt-level context with agent-specific invalidation.
-- **Session Sync**: Automating fact mining by crawling OpenClaw's local session logs on-demand.
+- **Context Caching**: High-performance TTL-based LRU cache to reduce latency.
+- **Session Sync**: Automating fact mining by crawling OpenClaw's local session logs.
 - **Webhook Pipeline**: Real-time events (`MEMORIES_PUSHED`, `MEMORIES_SYNCED`) for ecosystem observability.
-- **Reliability Tracking**: Historical tool success/failure stats for agent optimization.
-- **Security**: Response sanitization and Bearer-token authentication.
+- **Security**: Basic response sanitization and Bearer-token authentication.
 
 ## Quick Start
 

@@ -76,8 +76,29 @@ Sent from Thalamus to configured `webhook_urls`.
     }
     ```
 
-### D. Tool Reliability Stats
-Used to monitor and retrieve the reliability of tools for a specific agent.
+### D. Manual Search
+Perform a direct search on the memory graph.
+-   **Endpoint**: `POST /v1/search`
+-   **Body**:
+    ```json
+    {
+      "query": "string",
+      "limit": 5
+    }
+    ```
+-   **Response** (200 OK):
+    ```json
+    [
+      {
+        "snippet": "Recall content...",
+        "score": 0.95,
+        "category": "preference"
+      }
+    ]
+    ```
+
+### E. Tool Reliability Stats
+Retrieve historical reliability for tools bound to an agent.
 -   **Endpoint**: `GET /v1/tools/stats/{agent_id}`
 -   **Response** (200 OK):
     ```json
@@ -88,19 +109,3 @@ Used to monitor and retrieve the reliability of tools for a specific agent.
       ]
     }
     ```
-
----
-
-## 2. Internal API (Thalamus <-> Cognee)
-The Middleware translates the requests above into native Cognee API calls.
-
-### A. Search
--   **Endpoint**: `POST /api/v1/search`
--   **Body**: `{ "query": string, "search_type": "GRAPH", "limit": number }`
-
-### B. Add (Ingestion)
--   **Endpoint**: `POST /api/v1/add`
--   **Type**: `multipart/form-data`
--   **Fields**:
-    -   `data`: (File) Binary or text representation of the conversation.
-    -   `datasetName`: (string) "default" or `agent_id`.

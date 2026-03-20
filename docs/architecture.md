@@ -28,94 +28,80 @@ graph TD
 ---
 
 ## 3. System Architecture
-The new architecture utilizes a **Standalone Middleware** (Thalamus) that acts as a "Traffic Controller" and a **Hybrid Data Layer**.
+The architecture utilizes a **Standalone Middleware** (Thalamus) that acts as a bridge between OpenClaw and Cognee.
 
 ```mermaid
 graph TD
     subgraph "OpenClaw (Typescript)"
-        OC_P["Thin Plugin (Stable)"]
+        OC_P["Thin Plugin"]
     end
     
     subgraph "Middleware Service (Python/FastAPI)"
         MW["Thalamus Middleware"]
-        Cache["2-Layer Cache (LRU)"]
-        Logic["Cleaning / Re-ranking / Temporal"]
+        Cache["LRU Cache"]
     end
     
-    subgraph "Hybrid Data Layer (Modular)"
+    subgraph "Data Layer"
         CG["Cognee (Knowledge Graph)"]
-        PG["SQLite (RDBMS - Record Keeping)"]
+        PG["SQLite (Stats)"]
     end
 
-    OC_P -- "JSON API (Push)" --> MW
+    OC_P -- "JSON API" --> MW
     MW -- "File Read (Sync)" --> Sessions
     MW --> Cache
-    MW -- "Event Notification" --> Webhooks["External Webhooks (Outbound)"]
-    MW -- "Reasoning/Semantic" --> CG
-    MW -- "Structured/Logs" --> PG
+    MW -- "Webhooks" --> Webhooks["External Webhooks"]
+    MW --> CG
+    MW --> PG
 ```
 
-### 📡 The "Event-Driven" Webhook Layer
-Thalamus is an active participant in the ecosystem, notifying external services when internal state changes.
--   **MEMORIES_PUSHED**: Fired when new message turns are ingested.
--   **MEMORIES_SYNCED**: Fired when a session `sync` from the filesystem is complete.
+### 📡 Event Pipeline
+Thalamus notifies external services via webhooks when data is processed:
+-   **MEMORIES_PUSHED**: Fired when message turns are ingested via `/v1/ingest`.
+-   **MEMORIES_SYNCED**: Fired when session logs are crawled via `/v1/sync`.
 
-### 🧠 The "Pull-based Sync" (Middleware-Led Intelligence)
+### 🧠 Session Synchronization
 Thalamus can **pull** raw session data directly from OpenClaw's filesystem.
--   **Why**: OpenClaw's native memory filters are often too aggressive or too noisy. Thalamus can use more expensive, intelligent models to "mine" facts from raw logs in the background.
--   **How**: Thalamus monitors the `.jsonl` session files, extracts atomic facts, and "cognifies" them into a coherent graph via the `/v1/sync` endpoint.
+-   **How**: The `/v1/sync` endpoint reads `.jsonl` session files from the OpenClaw data directory and ingests them into the Cognee graph.
+-   **Benefit**: Allows for rebuilding or expanding the knowledge graph from historical data without relying on real-time capture.
 
 ### Why this architecture?
-1.  **Total Decoupling**: Changes to Cognee's internal API never break the OpenClaw plugin.
-2.  **Hybrid Power**: Combines Cognee's graph reasoning with high-speed Metadata filtering.
-3.  **Stability**: The OpenClaw plugin becomes a tiny, unchanging bridge.
+1.  **Isolation**: Changes to Cognee's internal API are handled within the middleware.
+2.  **Performance**: The LRU cache provides high-speed recall for repeated queries.
+3.  **Observability**: Webhooks and tool stats provide visibility into memory performance.
 
 ---
 
-## 4. Sequence: Middleware Data Flow
+## 4. Sequence: Data Flow
 
 ```mermaid
 sequenceDiagram
-    participant OC as OpenClaw (Thin)
-    participant MW as Thalamus (Logic)
-    participant CG as Cognee (Graph)
-    participant PG as PostgreSQL (RDBMS)
+    participant OC as OpenClaw
+    participant MW as Thalamus
+    participant CG as Cognee
     
-    rect rgb(230, 240, 255)
-    Note over OC,MW: Stage 1: Contextual Recall (before_agent_start)
-    OC->>MW: "What do we know about 'Project X'?"
-    MW->>MW: Check Cache (Fast Hit)
-    MW->>CG: Parallel Graph Search
-    MW->>PG: Parallel Keyword/Vector Search
-    MW->>MW: Re-rank + Add [Freshness] Tags
-    MW-->>OC: "Here is the summary of Project X..."
-    end
+    Note over OC,MW: Stage 1: Contextual Recall
+    OC->>MW: GET /v1/context
+    MW->>MW: Check LRU Cache
+    MW->>CG: Search Graph
+    MW-->>OC: Return <relevant-memories> block
     
-    rect rgb(250, 235, 235)
-    Note over OC,MW: Stage 2: Memory Capture (agent_end)
-    OC->>MW: "User said they prefer Dark Mode."
-    MW->>MW: Noise Filter (Skip small talk)
-    MW->>MW: Deduplicate against PG
-    MW->>PG: Log Session Intent
-    MW->>CG: Ingest / Cognify (Build Fact Node)
-    end
+    Note over OC,MW: Stage 2: Memory Capture
+    OC->>MW: POST /v1/ingest
+    MW->>CG: Ingest / Cognify
+    MW->>MW: Invalidate Cache
+    MW-->>OC: 200 OK
 ```
 
 ---
 
-## 5. Memory Management Strategies
+## 5. Implementation Details
 
-### A. Advanced Search & Optimization
--   **Hybrid Parallel Search**: Concurrent Vector, Keyword, and Graph queries.
--   **2-Layer Caching**: Prompt-level and Embedding-level caching.
+### A. Context Caching
+-   **LRU Cache**: A simple time-to-live (TTL) cache prevents redundant graph searches for the same query during a session.
+-   **Invalidation**: Ingesting new memories automatically clears the cache for the relevant agent to ensure freshness.
 
-### B. Memory Sanitization (The "Gardener")
--   **Duplicate Detection**: High-threshold similarity check prevents redundant nodes.
--   **Noise Filtering**: LLM-based classification drops "small talk".
--   **Conflict Resolution**: Detects when new info overwrites old info.
+### B. Output Sanitization
+-   **Tag Stripping**: To prevent prompt injection, Thalamus strips any nested `<relevant-memories>` or `<external-content>` tags from the memories before returning them to OpenClaw.
 
-### C. Governance & Temporal Encoding
--   **Freshness Markers**: Context is tagged with `[Current]`, `[Stale]`, or `[Historical]`.
--   **Importance Weighting**: High-signal facts are prioritized.
--   **Privacy Redaction**: Automated scrubbing of API keys and PII.
--   **Provenance**: Every memory traces back to its original session.
+### C. Reliability Tracking
+-   **Tool Stats**: Records tool execution events in a local SQLite database to track reliability over time.
