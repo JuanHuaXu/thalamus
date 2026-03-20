@@ -57,16 +57,19 @@ sequenceDiagram
     participant SL as SQLite (Reputation)
     participant CE as Consolidator
     
-    Note over OC,MW: Stage 1: Contextual Recall
+    Note over OC,MW: Stage 1: Contextual Recall (3-Stage LSA)
     OC->>MW: GET /v1/context
     MW->>MW: Check LRU Cache
-    par Fetch Facts
-        MW->>CG: Search Knowledge Graph
-    and Fetch Trust
-        MW->>SL: Get Fact Reputation scores
+    par Step 1: Surgical Search
+        MW->>CG: Search Agent-Specific Dataset
+    and Step 2: Broad Fallback
+        MW->>CG: Search Global Graph (if Step 1 empty)
+    and Step 3: Analogous Expansion
+        MW->>CG: Mutate Query (if Step 1+2 empty)
     end
+    MW->>SL: Get Fact Reputation scores
     MW->>MW: Filter out "Brain Rot" (low-trust nodes)
-    MW-->>OC: Return Vetted Context
+    MW-->>OC: Return Vetted Context + <latent-abstraction>
     
     Note over OC,MW: Stage 2: Memory Capture & Feedback
     OC->>MW: POST /v1/ingest

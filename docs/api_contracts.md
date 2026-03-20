@@ -14,12 +14,35 @@ Used in the `before_agent_start` hook to inject graph knowledge into the prompt.
 -   **Response** (200 OK):
     ```json
     {
-      "context": "<relevant-memories>...</relevant-memories>\n\n<tool-reliability>...</tool-reliability>",
-      "metadata": { "nodes_found": 2, "tools_ranked": 3, "latency_ms": 140 }
+      "context": "string",
+      "metadata": { 
+        "nodes_found": 5, 
+        "nodes_vetted": 2, 
+        "latent_nodes": 3,
+        "lsa_triggered": true 
+      }
     }
     ```
 
-### B. Message Ingestion
+### B. Knowledge Seeding (Evolutionary)
+Authoritative ingestion of documentation directly into the Graph.
+-   **Endpoint**: `POST /v1/seed`
+-   **Body**:
+    ```json
+    {
+      "urls": ["string"],
+      "agent_id": "string"
+    }
+    ```
+-   **Response**: { "status": "success", "urls_processed": 1, "facts_found": 10 }
+
+### C. Seeding Undo
+Reverses a seeding operation for a specific agent.
+-   **Endpoint**: `POST /v1/seed/undo`
+-   **Body**: { "agent_id": "string" }
+-   **Response**: { "status": "success", "action": "ARCHIVED" }
+
+### D. Message Ingestion
 Used in the `agent_end` hook to send new conversation data to the graph.
 -   **Endpoint**: `POST /v1/ingest`
 -   **Body**:
@@ -33,79 +56,47 @@ Used in the `agent_end` hook to send new conversation data to the graph.
       ]
     }
     ```
--   **Response** (200 OK):
-    ```json
-    { "status": "success", "message": "Memory ingested and cache invalidated." }
-    ```
+-   **Response**: { "status": "success", "message": "Memory ingested." }
 
-### C. Session Sync (Pull)
-Manually triggers a scan of OpenClaw's local session directory for a specific agent.
+### E. Session Sync (Pull)
+Manually triggers a scan of OpenClaw's local session directory.
 -   **Endpoint**: `POST /v1/sync`
--   **Body**:
-    ```json
-    {
-      "agent_id": "string",
-      "session_id": "string"  // Optional: Sync only one session
-    }
-    ```
--   **Response** (200 OK):
-    ```json
-    { 
-      "status": "success", 
-      "messages_synced": 150, 
-      "new_facts_extracted": 0,
-      "sessions_scanned": 5
-    }
-    ```
+-   **Body**: { "agent_id": "string", "session_id": "string" }
+-   **Response**: { "status": "success", "messages_synced": 100 }
 
-## 3. Webhook Notifications (Outbound)
-Sent from Thalamus to configured `webhook_urls`.
-
-### A. Generic Event Payload
--   **Method**: `POST`
--   **Body**:
-    ```json
-    {
-      "event": "MEMORIES_PUSHED | MEMORIES_SYNCED",
-      "agent_id": "string",
-      "timestamp": 123456789,
-      "payload": {
-        "messages_count": 5,
-        "sessions_scanned": 1
-      }
-    }
-    ```
-
-### D. Manual Search
+### F. Manual Search
 Perform a direct search on the memory graph.
 -   **Endpoint**: `POST /v1/search`
--   **Body**:
-    ```json
-    {
-      "query": "string",
-      "limit": 5
-    }
-    ```
--   **Response** (200 OK):
+-   **Body**: { "query": "string", "limit": 5 }
+-   **Response**:
     ```json
     [
-      {
-        "snippet": "Recall content...",
-        "score": 0.95,
-        "category": "preference"
-      }
+      { "snippet": "string", "score": 0.95, "category": "string" }
     ]
     ```
 
-### E. Tool Reliability Stats
+### G. Tool Reliability Stats
 Retrieve historical reliability for tools bound to an agent.
 -   **Endpoint**: `GET /v1/tools/stats/{agent_id}`
--   **Response** (200 OK):
+-   **Response**:
     ```json
     {
       "agent_id": "string",
       "stats": [
-        { "tool_name": "searxng_search", "success_count": 10, "failure_count": 1, "last_error": null }
+        { "tool_name": "string", "successes": 10, "failures": 1 }
       ]
+    }
+    ```
+
+## 2. Webhook Notifications (Outbound)
+Sent from Thalamus to configured `webhook_urls`.
+-   **Endpoint**: `POST [configured_url]`
+-   **Events**: `MEMORIES_PUSHED`, `MEMORIES_SYNCED`
+-   **Payload**:
+    ```json
+    {
+      "event": "string",
+      "agent_id": "string",
+      "payload": { "messages_count": 5 }
     }
     ```
