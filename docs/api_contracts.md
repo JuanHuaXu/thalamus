@@ -14,8 +14,8 @@ Used in the `before_agent_start` hook to inject graph knowledge into the prompt.
 -   **Response** (200 OK):
     ```json
     {
-      "context": "<relevant-memories>\n1. [preference] User prefers dark mode.\n2. [fact] Project X is a TypeScript app.\n</relevant-memories>",
-      "metadata": { "nodes_found": 2, "latency_ms": 140 }
+      "context": "<relevant-memories>...</relevant-memories>\n\n<tool-reliability>...</tool-reliability>",
+      "metadata": { "nodes_found": 2, "tools_ranked": 3, "latency_ms": 140 }
     }
     ```
 

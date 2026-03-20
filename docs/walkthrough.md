@@ -10,10 +10,11 @@ Acts as the central relay station:
 - **Location**: `/Users/clawdius/Projects/thalamus/`
 - **Key File**: `src/thalamus/main.py`
 - **Features**:
-    - **Context Recall**: `/v1/context` fetches Graph nodes from Cognee and formats them for the agent.
+    - **Context Recall**: `/v1/context` fetches Graph nodes from Cognee and ranks tools by reliability from SQLite.
     - **LRU Caching**: Prompt-level context is cached with TTL to reduce latency.
     - **Session Sync**: `/v1/sync` allows crawling OpenClaw session files to ingest facts post-conversation.
     - **Webhooks**: Outbound notifications for `MEMORIES_PUSHED` and `MEMORIES_SYNCED`.
+    - **Relational Storage**: High-performance persistence for tool reliability and performance metrics via SQLite.
 
 ### 2. Thalamus OpenClaw Plugin (TypeScript)
 Acts as the lightweight bridge:

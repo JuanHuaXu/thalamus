@@ -5,7 +5,7 @@ from .base import StorageProvider
 from ..api.schemas import SearchResult, IngestRequest, ToolExecutionEvent, ToolStat
 from ..core.config import settings
 
-class StubRelationalProvider(StorageProvider):
+class SQLiteRelationalProvider(StorageProvider):
     def __init__(self):
         db_path = "thalamus_rdbms.db" if not settings.sessions_dir else f"{settings.sessions_dir}/thalamus_rdbms.db"
         self.conn = sqlite3.connect(db_path, check_same_thread=False)

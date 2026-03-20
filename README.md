@@ -7,6 +7,7 @@ Universal Memory Middleware for OpenClaw and Cognee.
 - **Cognee Integration**: Native graph-based memory and context extraction.
 - **Context Caching**: High-performance TTL-based LRU cache to reduce latency.
 - **Session Sync**: Automating fact mining by crawling OpenClaw's local session logs.
+- **Tool Reliability Ranking**: SQLite-backed tracking of tool success/failure to guide agent behavior.
 - **Webhook Pipeline**: Real-time events (`MEMORIES_PUSHED`, `MEMORIES_SYNCED`) for ecosystem observability.
 - **Security**: Basic response sanitization and Bearer-token authentication.
 

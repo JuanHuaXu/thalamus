@@ -43,7 +43,7 @@ graph TD
     
     subgraph "Data Layer"
         CG["Cognee (Knowledge Graph)"]
-        PG["SQLite (Stats)"]
+        PG["SQLite (Relational Stats)"]
     end
 
     OC_P -- "JSON API" --> MW
@@ -55,9 +55,14 @@ graph TD
 ```
 
 ### 📡 Event Pipeline
-Thalamus notifies external services via webhooks when data is processed:
--   **MEMORIES_PUSHED**: Fired when message turns are ingested via `/v1/ingest`.
--   **MEMORIES_SYNCED**: Fired when session logs are crawled via `/v1/sync`.
+Thalamus acts as an active participant in the ecosystem, notifying external services when internal state changes:
+-   **MEMORIES_PUSHED**: Fired when new message turns are ingested.
+-   **MEMORIES_SYNCED**: Fired when a session `sync` from the filesystem is complete.
+
+### 🧠 Performance & Reliability (SQLite)
+Thalamus uses a local SQLite database for cross-agent metadata and performance tracking.
+-   **Tool Reliability Ranking**: Every tool execution success or failure is recorded. The system ranks tools by success rate and briefs the agent on which tools are currently most reliable via the `<tool-reliability>` context block.
+-   **Context Caching**: A TTL-based LRU cache prevents redundant graph searches, reducing latency for frequent queries.
 
 ### 🧠 Session Synchronization
 Thalamus can **pull** raw session data directly from OpenClaw's filesystem.
