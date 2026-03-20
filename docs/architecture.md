@@ -27,8 +27,8 @@ graph TD
 
 ---
 
-## 3. Proposed State (The Universal Vision)
-The new vision introduces a **Standalone Middleware** (Thalamus) that acts as a "Traffic Controller" and a **Hybrid Data Layer**.
+## 3. System Architecture
+The new architecture utilizes a **Standalone Middleware** (Thalamus) that acts as a "Traffic Controller" and a **Hybrid Data Layer**.
 
 ```mermaid
 graph TD
@@ -38,33 +38,32 @@ graph TD
     
     subgraph "Middleware Service (Python/FastAPI)"
         MW["Thalamus Middleware"]
-        Cache["2-Layer Cache (Redis/LRU)"]
+        Cache["2-Layer Cache (LRU)"]
         Logic["Cleaning / Re-ranking / Temporal"]
     end
     
     subgraph "Hybrid Data Layer (Modular)"
         CG["Cognee (Knowledge Graph)"]
-        PG["PostgreSQL (RDBMS - Stubbed)"]
+        PG["SQLite (RDBMS - Record Keeping)"]
     end
 
     OC_P -- "JSON API (Push)" --> MW
-    MW -- "File Read (Pull)" --> Sessions
+    MW -- "File Read (Sync)" --> Sessions
     MW --> Cache
     MW -- "Event Notification" --> Webhooks["External Webhooks (Outbound)"]
     MW -- "Reasoning/Semantic" --> CG
-    MW -- "Structured/Logs (Future)" --> PG
+    MW -- "Structured/Logs" --> PG
 ```
 
 ### 📡 The "Event-Driven" Webhook Layer
-Thalamus is no longer a passive relay; it proactively notifies the ecosystem when internal state changes.
--   **MEMORIES_SYNCED**: Fired when a session `sync` or `ingest` is complete.
--   **FACT_EXTRACTED**: Fired when a high-importance fact (user preference) is discovered.
--   **GRAPH_UPDATED**: Fired when Cognee finishes its background reorganization.
+Thalamus is an active participant in the ecosystem, notifying external services when internal state changes.
+-   **MEMORIES_PUSHED**: Fired when new message turns are ingested.
+-   **MEMORIES_SYNCED**: Fired when a session `sync` from the filesystem is complete.
 
 ### 🧠 The "Pull-based Sync" (Middleware-Led Intelligence)
-Instead of relying on OpenClaw to decide what is "important," Thalamus can now **pull** raw session data directly from OpenClaw's filesystem.
+Thalamus can **pull** raw session data directly from OpenClaw's filesystem.
 -   **Why**: OpenClaw's native memory filters are often too aggressive or too noisy. Thalamus can use more expensive, intelligent models to "mine" facts from raw logs in the background.
--   **How**: Thalamus monitors the `.jsonl` session files, extracts atomic facts, and "cognifies" them into a coherent graph.
+-   **How**: Thalamus monitors the `.jsonl` session files, extracts atomic facts, and "cognifies" them into a coherent graph via the `/v1/sync` endpoint.
 
 ### Why this architecture?
 1.  **Total Decoupling**: Changes to Cognee's internal API never break the OpenClaw plugin.

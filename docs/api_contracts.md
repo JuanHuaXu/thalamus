@@ -33,9 +33,9 @@ Used in the `agent_end` hook to send new conversation data to the graph.
       ]
     }
     ```
--   **Response** (202 Accepted):
+-   **Response** (200 OK):
     ```json
-    { "status": "queued", "task_id": "uuid" }
+    { "status": "success", "message": "Memory ingested and cache invalidated." }
     ```
 
 ### C. Session Sync (Pull)
@@ -45,13 +45,17 @@ Manually triggers a scan of OpenClaw's local session directory for a specific ag
     ```json
     {
       "agent_id": "string",
-      "session_id": "string",  // Optional: Sync only one session
-      "deep_scan": false       // Optional: Use expensive LLM filtering
+      "session_id": "string"  // Optional: Sync only one session
     }
     ```
 -   **Response** (200 OK):
     ```json
-    { "status": "success", "messages_synced": 150, "new_facts_extracted": 12 }
+    { 
+      "status": "success", 
+      "messages_synced": 150, 
+      "new_facts_extracted": 0,
+      "sessions_scanned": 5
+    }
     ```
 
 ## 3. Webhook Notifications (Outbound)
@@ -62,37 +66,27 @@ Sent from Thalamus to configured `webhook_urls`.
 -   **Body**:
     ```json
     {
-      "event": "MEMORIES_SYNCED | FACT_EXTRACTED",
+      "event": "MEMORIES_PUSHED | MEMORIES_SYNCED",
       "agent_id": "string",
       "timestamp": 123456789,
       "payload": {
-        "count": 5,
-        "message": "Cognification complete for agent main"
+        "messages_count": 5,
+        "sessions_scanned": 1
       }
     }
     ```
 
-### C. Manual Search
-Used by the `memory_search` tool for proactive agent-led recall.
--   **Endpoint**: `POST /v1/search`
--   **Body**:
-    ```json
-    {
-      "query": "string",
-      "limit": 5,
-      "min_score": 0.5
-    }
-    ```
+### D. Tool Reliability Stats
+Used to monitor and retrieve the reliability of tools for a specific agent.
+-   **Endpoint**: `GET /v1/tools/stats/{agent_id}`
 -   **Response** (200 OK):
     ```json
-    [
-      {
-        "path": "memory:graph-node-id",
-        "snippet": "...",
-        "score": 0.95,
-        "category": "preference"
-      }
-    ]
+    {
+      "agent_id": "string",
+      "stats": [
+        { "tool_name": "searxng_search", "success_count": 10, "failure_count": 1, "last_error": null }
+      ]
+    }
     ```
 
 ---
@@ -110,7 +104,3 @@ The Middleware translates the requests above into native Cognee API calls.
 -   **Fields**:
     -   `data`: (File) Binary or text representation of the conversation.
     -   `datasetName`: (string) "default" or `agent_id`.
-
-### C. Cognify (Processing)
--   **Endpoint**: `POST /api/v1/cognify`
--   **Body**: `{ "datasets": ["datasetName"] }`

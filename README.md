@@ -2,48 +2,42 @@
 
 Universal Memory Middleware for OpenClaw and Cognee.
 
-## Overview
-Thalamus acts as a "Relay Station" and "Memory Gardener" between the OpenClaw plugin and the Cognee Knowledge Graph backend.
-
 ## Features
 - **Decoupled Architecture**: Thin OpenClaw plugin + Rich Python middleware.
-- **Cognee Integration**: Leveraging Cognee for graph-based memory and context extraction.
-- **LRU Caching**: High-performance context caching with TTL-based expiration and manual invalidation.
-- **Prompt Injection Protection**: Sanitization of memory outputs to prevent LLM breakout.
-- **Session Sync**: Capability to crawl and ingest existing OpenClaw session logs.
+- **Cognee Integration**: Native graph-based memory and context extraction.
+- **2-Layer Caching**: High-performance LRU cache for prompt-level context with agent-specific invalidation.
+- **Session Sync**: Automating fact mining by crawling OpenClaw's local session logs on-demand.
+- **Webhook Pipeline**: Real-time events (`MEMORIES_PUSHED`, `MEMORIES_SYNCED`) for ecosystem observability.
+- **Reliability Tracking**: Historical tool success/failure stats for agent optimization.
+- **Security**: Response sanitization and Bearer-token authentication.
 
-## Installation
+## Quick Start
 
-1. Clone this repository into your Projects directory:
-   ```bash
-   git clone <repository-url> thalamus
-   cd thalamus
-   ```
-2. Create and activate a virtual environment:
+1. **Install Dependencies**:
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   ```
-3. Install dependencies:
-   ```bash
    pip install -r requirements.txt
    ```
-4. Configure the middleware (see `config.json` or environment variables).
 
-## Running the Middleware
+2. **Configuration**:
+   Copy `config.json.example` to `config.json` and set your `OLLAMA_API_BASE` and `SESSIONS_DIR`.
 
-Start the FastAPI server:
-```bash
-python -m src.thalamus.main
-```
-By default, it runs on `http://127.0.0.1:8080`.
+3. **Run**:
+   ```bash
+   python -m src.thalamus.main
+   ```
+   Server starts at `http://127.0.0.1:8080`.
 
 ## API Endpoints
 
-- `GET /v1/context`: Retrieve formatted context for a query.
-- `POST /v1/ingest`: Ingest new messages into memory.
-- `POST /v1/search`: Perform a manual search.
-- `POST /v1/sync`: Sync OpenClaw sessions into the Cognee graph.
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/v1/context` | `GET` | Fetches formatted context block (cached). |
+| `/v1/ingest` | `POST` | Manually ingest message turns into the graph. |
+| `/v1/sync` | `POST` | Sync OpenClaw session logs for an agent. |
+| `/v1/search` | `POST` | Low-level graph search. |
+| `/v1/tools/stats/{id}` | `GET` | Retrieve tool reliability metrics. |
 
 ## Documentation
 - [Architecture Overview](docs/architecture.md)
