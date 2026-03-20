@@ -1,0 +1,14 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "cognee_api_url": "http://localhost:8000",
+  "cognee_api_key": null,
+  "cognee_dataset_name": "default",
+  "enable_rdbms": false,
+  "database_url": null,
+  "sessions_dir": "/Users/clawdius/.openclaw/agents",
+  "cognify_debounce_ms": 5000,
+  "cache_ttl_seconds": 300,
+  "webhook_urls": ["http://localhost:3001/webhook"],
+  "webhook_secret": "openclaw-thalamus-secret-token"
+}
