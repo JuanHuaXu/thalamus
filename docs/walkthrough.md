@@ -15,13 +15,68 @@ Acts as the central relay station:
     - **Session Sync**: `/v1/sync` allows crawling OpenClaw session files to ingest facts post-conversation.
     - **Webhooks**: Outbound notifications for `MEMORIES_PUSHED` and `MEMORIES_SYNCED`.
     - **Relational Storage**: High-performance persistence for tool reliability and performance metrics via SQLite.
+### Verification Results
+The Evolutionary Knowledge Hub has been verified using a dedicated test suite (`tests/test_evolution.py`).
 
+| Feature | Test Case | Status | Rationale |
+|---------|-----------|--------|-----------|
+| **Web Seeding** | `test_crawler_extraction` | ✅ PASSED | Verified `trafilatura` high-fidelity extraction. |
+| **Feedback Loop** | `test_fact_reputation_dispute_api` | ✅ PASSED | Automated 'failure' detection successfully penalizes nodes. |
+| **Knowledge Filtering** | `test_disputed_fact_filtering` | ✅ PASSED | 'DISPUTED' nodes are strictly hidden from agent context. |
+
+> [!TIP]
+> Run the suite yourself using: `PYTHONPATH=src python3 -m pytest tests/test_evolution.py`
+### 4. Evolutionary Knowledge Hub (New)
+The system now manages its own "Scientific Method" for truth:
+
+1.  **Authoritative Seeding**:
+    `curl -X POST http://localhost:8000/v1/seed -d '{"urls": ["https://docs.cognee.ai"]}'`
+    -   *Logic*: Extract clean text from docs and prime the Knowledge Graph.
+
+> [!IMPORTANT]
+> **Real-Time Ingestion**: Thalamus is a live memory system. Once seeding completes, facts are **immediately** available to the agent. **No gateway or agent restart is required.**
+
+2.  **Automated Feedback Loop**:
+    When an agent turn ends, Thalamus automatically detects success or failure.
+    -   *Success*: `{"role": "assistant", "content": "Correct! It worked."}` -> Increments confidence in used nodes.
+    -   *Failure*: `{"role": "assistant", "content": "Error: Command not found."}` -> Node reputation drops. 
+    -   *Dispute*: After 3 failures, a node is marked as `DISPUTED` and **filtered out** of future contexts.
+
+### 3. Consolidation Engine
+Trigger a consolidation pass to synthesize conflicting facts and prune obsolete data.
+
+```bash
+curl -X POST http://localhost:8080/v1/consolidate \
+     -H "Content-Type: application/json" \
+     -d '{"agent_id": "scientific_agent"}'
+```
+
+### 4. Seeding Undo (The "Self-Correct" Switch)
+In addition to automated feedback, you can manually "undo" an entire seeding session if you realize the source was low quality. This archives the facts for that agent.
+
+```bash
+curl -X POST http://localhost:8080/v1/seed/undo \
+     -H "Content-Type: application/json" \
+     -d '{"agent_id": "undo_test_agent"}'
+```
 ### 2. Thalamus OpenClaw Plugin (TypeScript)
 Acts as the lightweight bridge:
 - **Location**: `/Users/clawdius/.openclaw/extensions/thalamus/`
 - **Hooks**:
     - **Recall**: Fetches context from Thalamus *before* the agent starts.
     - **Capture**: Sends conversation turns to Thalamus *after* the agent ends.
+
+### D. Latent Space Abstraction (LSA)
+To prevent hallucinations when specific knowledge is missing, Thalamus implements a **3-Stage Retrieval Pipeline**:
+
+1.  **Surgical Search**: First, it searches only the agent's partitioned datasets.
+2.  **Broad Fallback**: If no specific facts are found, it broadens the search to the **Global Graph** (all synced agents and documentation).
+3.  **Analogous Expansion**: If still empty, it applies **Heuristic Query Mutation** (e.g. stripping version numbers or specific constraints) to find analogous concepts in other domains.
+
+These latent facts are tagged with `<latent-abstraction>` in the prompt to signal to the agent that it should reason by analogy rather than memory.
+
+> [!NOTE]
+> **Processing Latency**: After seeding large documents (like PDFs), the graph "cognification" process can take several minutes. During this window, search queries may experience higher latency or timeouts as the graph is updated.
 
 ---
 

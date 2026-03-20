@@ -6,7 +6,7 @@ This document outlines the migration from a **hardcoded built-in** Cognee integr
 ---
 
 ## 2. System Architecture
-Thalamus acts as the "Cognitive Traffic Controller" between OpenClaw and Cognee.
+Thalamus acts as the "Cognitive Traffic Controller" and **Evolutionary Knowledge Hub** between OpenClaw and Cognee.
 
 ```mermaid
 graph TD
@@ -17,81 +17,78 @@ graph TD
     subgraph "Middleware Service (Python/FastAPI)"
         MW["Thalamus Middleware"]
         Cache["LRU Cache"]
+        Consol["Consolidation Engine"]
     end
     
     subgraph "Data Layer"
         CG["Cognee (Knowledge Graph)"]
-        PG["SQLite (Relational Stats)"]
+        SL["SQLite (Fact Reputation)"]
     end
 
     OC_P -- "JSON API" --> MW
     MW -- "File Read (Sync)" --> Sessions
     MW --> Cache
-    MW -- "Webhooks" --> Webhooks["External Webhooks"]
+    MW -- "Seed / Fetch" --> Web["Web Docs"]
     MW --> CG
-    MW --> PG
+    MW --> SL
+    Consol -- "Synthesis / Pruning" --> CG
+    Consol -- "Audit / Decay" --> SL
 ```
 
 ### 📡 Event Pipeline
 Thalamus notifies external services via webhooks when data is processed:
--   **MEMORIES_PUSHED**: Fired when message turns are ingested via `/v1/ingest`.
+-   **MEMORIES_PUSHED**: Fired when new message turns are ingested via `/v1/ingest`.
 -   **MEMORIES_SYNCED**: Fired when session logs are crawled via `/v1/sync`.
 
-### 🧠 Performance & Reliability (SQLite)
-Thalamus uses a local SQLite database for cross-agent metadata and performance tracking.
--   **Tool Reliability Ranking**: Every tool execution success or failure is recorded. The system ranks tools by success rate and briefs the agent on which tools are currently most reliable via the `<tool-reliability>` context block.
--   **Context Caching**: A TTL-based LRU cache prevents redundant graph searches, reducing latency for frequent queries.
-
-### 🧠 Session Synchronization
-Thalamus can **pull** raw session data directly from OpenClaw's filesystem.
--   **How**: The `/v1/sync` endpoint reads `.jsonl` session files from the OpenClaw data directory and ingests them into the Cognee graph.
--   **Benefit**: Allows for rebuilding or expanding the knowledge graph from historical data without relying on real-time capture.
-
-### Why this architecture?
-1.  **Isolation**: Changes to Cognee's internal API are handled within the middleware.
-2.  **Performance**: The LRU cache provides high-speed recall for repeated queries.
-3.  **Observability**: Webhooks and tool stats provide visibility into memory performance.
+### 🧠 Evolutionary Knowledge (SQLite)
+Thalamus uses a local SQLite database to manage the **lifecycle** of facts stored in Cognee.
+-   **Fact Reputation**: Every interaction weights the "confidence" of a graph node. High-failure nodes are eventually "hidden" from the agent.
+-   **Temporal Decay**: Passive "forgetting" of stale information that hasn't been accessed or reinforced in recent interaction cycles.
 
 ---
 
-## 3. Sequence: Data Flow
+## 3. Sequence: Evolutionary Data Flow
 
 ```mermaid
 sequenceDiagram
     participant OC as OpenClaw
     participant MW as Thalamus
     participant CG as Cognee
-    participant SL as SQLite (Relational)
+    participant SL as SQLite (Reputation)
+    participant CE as Consolidator
     
     Note over OC,MW: Stage 1: Contextual Recall
     OC->>MW: GET /v1/context
     MW->>MW: Check LRU Cache
-    par Graph Search
+    par Fetch Facts
         MW->>CG: Search Knowledge Graph
-    and Reliability Stats
-        MW->>SL: Fetch Tool Reputation
+    and Fetch Trust
+        MW->>SL: Get Fact Reputation scores
     end
-    MW->>MW: Rank Tools by Success Rate
-    MW-->>OC: Return <relevant-memories> + <tool-reliability>
+    MW->>MW: Filter out "Brain Rot" (low-trust nodes)
+    MW-->>OC: Return Vetted Context
     
-    Note over OC,MW: Stage 2: Memory Capture
+    Note over OC,MW: Stage 2: Memory Capture & Feedback
     OC->>MW: POST /v1/ingest
-    MW->>CG: Ingest / Cognify
-    MW->>SL: Update Metadata (if any)
-    MW->>MW: Invalidate Cache
+    MW->>CG: Ingest raw facts
+    MW->>SL: Increment success/failure for used nodes
     MW-->>OC: 200 OK
+    
+    Note over CE,CG: Stage 3: Consolidation (Background)
+    CE->>CG: Scan for conflicting node clusters
+    CE->>SL: Review interaction history
+    CE->>CE: Synthesize "Composite Truth"
+    CE->>CG: Replace/Prune old nodes
 ```
 
 ---
 
 ## 4. Implementation Details
 
-### A. Context Caching
--   **LRU Cache**: A simple time-to-live (TTL) cache prevents redundant graph searches for the same query during a session.
--   **Invalidation**: Ingesting new memories automatically clears the cache for the relevant agent to ensure freshness.
+### A. Fact Consolidation
+-   **Synthesis**: Periodic passes merge redundant or conflicting nodes into high-confidence "wisdom" nodes using the agent's historical performance as a guide.
+-   **Conflict Resolution**: Empirical truth (terminal success) always out-ranks seeded documentation when conflicts arise in SQLite.
 
-### B. Output Sanitization
--   **Tag Stripping**: To prevent prompt injection, Thalamus strips any nested `<relevant-memories>` or `<external-content>` tags from the memories before returning them to OpenClaw.
-
-### C. Reliability Tracking
--   **Tool Stats**: Records tool execution events in a local SQLite database to track reliability over time.
+### B. Output Sanitization & Freshness
+-   **Tag Stripping**: Prevents prompt injection breakouts.
+-   **Freshness Weighting**: Natural decay ensures that older, un-reinforced knowledge drifts into "Historical Cold Storage."

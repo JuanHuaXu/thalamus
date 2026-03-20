@@ -12,16 +12,20 @@ class CogneeProvider(StorageProvider):
             **( {"Authorization": f"Bearer {settings.cognee_api_key}"} if settings.cognee_api_key else {} )
         }
 
-    async def search(self, query: str, limit: int) -> List[SearchResult]:
-        async with httpx.AsyncClient() as client:
+    async def search(self, query: str, limit: int, dataset_name: Optional[str] = None) -> List[SearchResult]:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # We ignore dataset_name for the POST payload because the environment Cognee 
+            # version throws 400 on 'dataset_names'. We filter in Thalamus instead.
+            payload = {
+                "query": query,
+                "search_type": "GRAPH",
+                "limit": limit
+            }
+
             response = await client.post(
                 f"{self.api_url}/api/v1/search",
                 headers=self.headers,
-                json={
-                    "query": query,
-                    "search_type": "GRAPH", # Leverage graph by default
-                    "limit": limit
-                }
+                json=payload
             )
             response.raise_for_status()
             results = response.json()
@@ -37,32 +41,40 @@ class CogneeProvider(StorageProvider):
             ]
 
     async def add(self, request: IngestRequest) -> None:
-        async with httpx.AsyncClient() as client:
-            # For simplicity in MVP, we send the content as a single blob to /add
-            # In a real scenario, we might want to split messages or use multipart
-            content = "\n".join([f"{m.role}: {m.content}" for m in request.messages])
-            
-            # Cognee 'add' typically expects multipart-form-data for files
+        """Standard ingestion for conversation messages."""
+        content = "\n".join([f"{m.role}: {m.content}" for m in request.messages])
+        await self.add_text(content, dataset_name=f"agent_{request.agent_id}")
+
+    async def add_text(self, text: str, dataset_name: str) -> None:
+        """Uploads a text block as a 'file' to Cognee."""
+        # Increased timeout to 60s to handle Cognee processing
+        async with httpx.AsyncClient(timeout=60.0) as client:
             files = {
-                "data": (f"session_{request.agent_id}.txt", content, "text/plain")
+                "data": ("ingest_chunk.txt", text, "text/plain")
             }
-            dataset_name = settings.cognee_dataset_name if settings.cognee_dataset_name else f"agent_{request.agent_id}"
             data = {"datasetName": dataset_name}
             
             response = await client.post(
                 f"{self.api_url}/api/v1/add",
-                headers={k: v for k, v in self.headers.items() if k != "Content-Type"}, # httpx handles boundary
+                headers={k: v for k, v in self.headers.items() if k != "Content-Type"},
                 files=files,
                 data=data
             )
             response.raise_for_status()
-            
-            # Trigger cognify to process the new data
-            await client.post(
+
+    async def record_access(self, memory_id: str) -> None:
+        """Placeholder for auditing and freshness weighting."""
+        pass
+
+    async def cognify(self, dataset_name: str) -> None:
+        """Triggers graph processing for the specified dataset."""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
                 f"{self.api_url}/api/v1/cognify",
                 headers=self.headers,
                 json={"datasets": [dataset_name]}
             )
+            response.raise_for_status()
 
     async def record_access(self, memory_id: str) -> None:
         # Cognee doesn't have a native 'record_access' yet, but we could update node metadata

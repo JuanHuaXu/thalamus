@@ -50,3 +50,15 @@ class ToolStat(BaseModel):
 class ToolStatsResponse(BaseModel):
     agent_id: str
     stats: List[ToolStat]
+
+class SeedRequest(BaseModel):
+    urls: List[str]
+    agent_id: str = "default"
+
+class SeedResponse(BaseModel):
+    status: str
+    urls_processed: int
+    facts_found: int
+
+class SeedUndoRequest(BaseModel):
+    agent_id: str

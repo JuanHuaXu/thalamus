@@ -7,9 +7,11 @@ import re
 from cachetools import TTLCache
 import httpx
 import time
-from .api.schemas import IngestRequest, SearchRequest, ContextResponse, SearchResult, SyncRequest, SyncResponse, MemoryMessage, ToolExecutionEvent, ToolStatsResponse
+from pydantic import BaseModel
+from .api.schemas import IngestRequest, SearchRequest, ContextResponse, SearchResult, SyncRequest, SyncResponse, MemoryMessage, ToolExecutionEvent, ToolStatsResponse, SeedRequest, SeedResponse, SeedUndoRequest
 from .providers.cognee import CogneeProvider
 from .providers.relational import SQLiteRelationalProvider
+from .providers.crawler import CrawlerProvider
 from .core.config import settings
 
 # HTTP Bearer Auth
@@ -27,119 +29,172 @@ app = FastAPI(title="Thalamus Middleware", version="0.1.0", dependencies=[Depend
 cognee = CogneeProvider()
 rdbms = SQLiteRelationalProvider()
 
-# LRU Cache for Context: Key = (agent_id, query)
+# In-memory caches
 context_cache = TTLCache(maxsize=1000, ttl=settings.cache_ttl_seconds)
+last_served_nodes = TTLCache(maxsize=100, ttl=600)  # agent_id -> set(node_ids)
+
+@app.on_event("startup")
+async def startup_event():
+    await rdbms.initialize()
 
 async def broadcast_event(event_type: str, agent_id: str, payload: dict):
     # ... (rest of broadcast_event as before)
     pass
 
+# --- API Schemas extension ---
+# The SeedRequest and SeedResponse are now in api/schemas.py
+
+@app.post("/v1/seed", response_model=SeedResponse)
+async def seed_knowledge(request: SeedRequest):
+    """Authoritative ingestion from a list of documentation URLs."""
+    crawler = CrawlerProvider()
+    
+    total_facts = 0
+    for url in request.urls:
+        content = crawler.fetch_and_clean(url)
+        if content:
+            # We treat the Doc URL as a 'virtual file'
+            # In a real system, we'd use a specialized Cognee config for docs
+            await cognee.add_text(content, dataset_name=f"doc_seed_{request.agent_id}")
+            total_facts += 1
+            
+    if total_facts > 0:
+        await cognee.cognify(dataset_name=f"doc_seed_{request.agent_id}")
+        
+    return SeedResponse(status="success", urls_processed=len(request.urls), facts_found=total_facts)
+
+@app.post("/v1/seed/undo")
+async def undo_seed(request: SeedUndoRequest):
+    """
+    Reverses the impact of a seeding operation by marking all associated facts as ARCHIVED.
+    This fulfills the 'Scientific Method' by providing a clean way to prune test or 'brain rot' data.
+    """
+    await rdbms.bulk_dispute_agent_facts(request.agent_id)
+    return {"status": "success", "agent_id": request.agent_id, "action": "ARCHIVED"}
+
+@app.post("/v1/consolidate")
+async def consolidate_knowledge(agent_id: str = "default"):
+    """Triggers the synthesis of conflicting or redundant facts."""
+    from .core.consolidator import ConsolidationEngine
+    engine = ConsolidationEngine(cognee, rdbms)
+    pruned = await engine.run_consolidation_pass(agent_id)
+    return {"status": "success", "nodes_processed": pruned}
+
+@app.post("/v1/ingest")
+async def ingest_memories(request: IngestRequest):
+    """Ingests messages and triggers the automated feedback loop (Scientific Method)."""
+    try:
+        # 1. Ingest to Cognee
+        await cognee.add(request)
+        
+        # 2. AUTOMATED FEEDBACK LOOP
+        last_message = request.messages[-1].content.lower()
+        is_failure = any(word in last_message for word in ["error", "failed", "didn't work", "cannot find", "not found", "broken"])
+        is_success = any(word in last_message for word in ["success", "worked", "done", "fixed", "correct"])
+        
+        if is_failure or is_success:
+            nodes_to_update = last_served_nodes.get(request.agent_id, set())
+            if nodes_to_update:
+                print(f"[Thalamus] Feedback for {len(nodes_to_update)} nodes: {'SUCCESS' if is_success else 'FAILURE'}")
+                for node_id in nodes_to_update:
+                    await rdbms.record_fact_interaction(node_id, request.agent_id, success=is_success)
+                last_served_nodes.pop(request.agent_id, None)
+
+        # 3. Cache Invalidation
+        keys_to_del = [k for k in context_cache.keys() if k.startswith(f"{request.agent_id}:")]
+        for k in keys_to_del:
+            del context_cache[k]
+            
+        await broadcast_event("MEMORIES_PUSHED", request.agent_id, {"messages_count": len(request.messages)})
+        return {"status": "success"}
+    except Exception as e:
+        print(f"[Thalamus] Ingest error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/v1/context", response_model=ContextResponse)
-async def get_context(q: str, agent_id: str):
+async def get_context(q: str, agent_id: str = "default"):
     """
     Orchestrates search across multiple providers and returns a pre-formatted context block with caching.
     """
-    cache_key = (agent_id, q)
+    cache_key = f"{agent_id}:{q}"
     if cache_key in context_cache:
         print(f"[Thalamus] Cache hit for query: {q}")
         return context_cache[cache_key]
 
     try:
-        # 1. Fetch memories from Cognee (with fail-soft)
-        mem_results = []
-        try:
-            mem_results = await cognee.search(q, limit=5)
-        except Exception as e:
-            print(f"[Thalamus] Cognee search failed (continuing with tool stats): {e}")
-
-        # 2. Fetch tool reliability stats from SQLite for ranking/briefing
-        tool_stats = []
-        try:
-            tool_stats = await rdbms.get_tool_stats(agent_id)
-        except Exception as e:
-            print(f"[Thalamus] SQLite stats fetch failed: {e}")
+        # --- STAGE 1 & 2: Broad Search with Post-Filtering ---
+        all_results = await cognee.search(q, limit=5)
         
-        # Filter for tools that have actually been used and have stats
+        # Track for feedback loop
+        node_ids = {res.path for res in all_results}
+        last_served_nodes[agent_id] = node_ids
+
+        # Fetch reputations
+        reputations = await rdbms.get_fact_reputations(agent_id)
+        
+        def sanitize(text: str) -> str:
+            return re.sub(r'</?(relevant-memories|tool-reliability|latent-abstraction)>', '', text, flags=re.IGNORECASE)
+
+        vetted_memories = [] # Surgical
+        latent_memories = [] # Latent
+
+        for mem in all_results:
+            rep = reputations.get(mem.path)
+            if rep:
+                if rep["status"] == "DISPUTED":
+                    continue
+                vetted_memories.append(f"- [{mem.category or 'Memory'}] {sanitize(mem.snippet)}")
+            else:
+                latent_memories.append(f"- [{mem.category or 'Analogy'}] {sanitize(mem.snippet)}")
+
+        # --- STAGE 3: Mutation Fallback (Only if literally nothing) ---
+        if not vetted_memories and not latent_memories:
+            mutated_q = re.sub(r'\b(v?\d+\.\d+)\b', '', q).strip()
+            if mutated_q and mutated_q != q:
+                extra_results = await cognee.search(mutated_q, limit=3)
+                for mem in extra_results:
+                    latent_memories.append(f"- [{mem.category or 'Analogy'}] {sanitize(mem.snippet)}")
+
+        # Format blocks
+        mem_block = f"<relevant-memories>\n" + "\n".join(vetted_memories) + "\n</relevant-memories>" if vetted_memories else ""
+        latent_block = f"<latent-abstraction>\n" + "\n".join(latent_memories) + "\n</latent-abstraction>" if latent_memories else ""
+
+        if not mem_block and not latent_block:
+            mem_block = "<relevant-memories>\nNo high-confidence memories found.\n</relevant-memories>"
+
+        # Tool Reputation
+        tool_stats = await rdbms.get_tool_stats(agent_id)
         active_tool_stats = [ts for ts in tool_stats if ts.successes > 0 or ts.failures > 0]
-        # Rank by success rate: successes / (successes + failures)
         active_tool_stats.sort(key=lambda x: x.successes / (x.successes + x.failures) if (x.successes + x.failures) > 0 else 0, reverse=True)
 
-        def sanitize_memory(text: str) -> str:
-            # Strip out malicious closing tags to prevent prompt injection breakouts
-            safe = re.sub(r'</relevant-memories>', '[tag removed]', text, flags=re.IGNORECASE)
-            safe = re.sub(r'</tool-reliability>', '[tag removed]', safe, flags=re.IGNORECASE)
-            return safe
-
-        # Format Memory Block
-        if mem_results:
-            memory_list = "\n".join([
-                f"- [{res.category or 'Memory'}] {sanitize_memory(res.snippet)}"
-                for res in mem_results
-            ])
-            mem_block = f"<relevant-memories>\n{memory_list}\n</relevant-memories>"
-        else:
-            mem_block = "<relevant-memories>\nNo relevant memories found.\n</relevant-memories>"
-            
-        # Format Tool Reliability Block (Ranking)
+        tool_block = ""
         if active_tool_stats:
             stats_list = "\n".join([
-                f"- {ts.tool_name}: {ts.successes} success, {ts.failures} failure (Reliability: {int((ts.successes / (ts.successes + ts.failures)) * 100)}%)"
+                f"- {ts.tool_name}: Reliability {int((ts.successes / (ts.successes + ts.failures)) * 100)}%"
                 for ts in active_tool_stats
             ])
-            tool_block = f"<tool-reliability>\nHistorical tool performance for this agent:\n{stats_list}\n</tool-reliability>"
-        else:
-            tool_block = ""
+            tool_block = f"<tool-reliability>\n{stats_list}\n</tool-reliability>"
             
-        combined_context = f"{mem_block}\n\n{tool_block}".strip()
+        combined_context = "\n\n".join(filter(None, [mem_block, latent_block, tool_block])).strip()
         
         response = ContextResponse(
             context=combined_context,
             metadata={
-                "nodes_found": len(mem_results), 
-                "tools_ranked": len(active_tool_stats),
-                "cached": False
+                "nodes_found": len(all_results),
+                "nodes_vetted": len(vetted_memories),
+                "latent_nodes": len(latent_memories),
+                "lsa_triggered": len(latent_memories) > 0 and len(vetted_memories) == 0
             }
         )
         
-        # Cache for subsequent calls
         context_cache[cache_key] = response
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/v1/ingest")
-async def ingest_memory(request: IngestRequest):
-    """
-    Ingests messages into both graph and relational backends.
-    Invalidates the context cache for the agent to ensure 'Fresh' recall.
-    """
-    try:
-        # Ingest to Cognee (Active)
-        await cognee.add(request)
-        
-        # Ingest to RDBMS (Stub)
-        await rdbms.add(request)
-        
-        # Temporal Invalidation: Clear any cached context for this agent
-        # (Since cache_key is (agent_id, query), we clear all matching agent_id)
-        keys_to_clear = [k for k in context_cache.keys() if k[0] == request.agent_id]
-        for k in keys_to_clear:
-            del context_cache[k]
-            
-        print(f"[Thalamus] Cache invalidated for agent: {request.agent_id}")
-        
-        # Notify via Webhook
-        await broadcast_event("MEMORIES_PUSHED", request.agent_id, {"messages_count": len(request.messages)})
-        
-        return {"status": "success", "message": "Memory ingested and cache invalidated."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/v1/search", response_model=List[SearchResult])
 async def manual_search(request: SearchRequest):
-    """
-    Manual search endpoint for agent-led queries.
-    """
+    """Deep search across the Cognee graph."""
     try:
         return await cognee.search(request.query, limit=request.limit)
     except Exception as e:
@@ -147,11 +202,9 @@ async def manual_search(request: SearchRequest):
 
 @app.post("/v1/tools/stats/record")
 async def record_tool_stats(event: ToolExecutionEvent):
-    """
-    Records a tool execution event for reliability tracking.
-    """
+    """Telemetery for tool reliability."""
     try:
-        await rdbms.record_tool_execution(event)
+        await rdbms.record_tool_stats(event.agent_id, event.tool_name, event.status)
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

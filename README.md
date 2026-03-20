@@ -4,9 +4,11 @@ Universal Memory Middleware for OpenClaw and Cognee.
 
 ## Features
 - **Decoupled Architecture**: Thin OpenClaw plugin + Rich Python middleware.
+- **Evolutionary Knowledge Hub**: Automated feedback loop that rewards successful facts and penalizes "brain rot" based on real-world outcomes.
+- **Authoritative Web Seeding**: Bulk-ingest documentation directly into the graph via any public URL.
+- **Consolidation Engine**: Background synthesis to merge conflicting facts and prune obsolete data.
 - **Cognee Integration**: Native graph-based memory and context extraction.
 - **Context Caching**: High-performance TTL-based LRU cache to reduce latency.
-- **Session Sync**: Automating fact mining by crawling OpenClaw's local session logs.
 - **Tool Reliability Ranking**: SQLite-backed tracking of tool success/failure to guide agent behavior.
 - **Webhook Pipeline**: Real-time events (`MEMORIES_PUSHED`, `MEMORIES_SYNCED`) for ecosystem observability.
 - **Security**: Basic response sanitization and Bearer-token authentication.
