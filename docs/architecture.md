@@ -5,30 +5,8 @@ This document outlines the migration from a **hardcoded built-in** Cognee integr
 
 ---
 
-## 2. Current State (Built-in Integration)
-Currently, Cognee is integrated directly into the OpenClaw core. This is difficult to maintain and lacks advanced features like caching or hybrid search.
-
-```mermaid
-graph TD
-    subgraph "OpenClaw Core (Typescript)"
-        SM["Search Manager (Hardcoded)"]
-        MT["Memory Tools"]
-    end
-    
-    subgraph "Cognee Server (Python)"
-        API["Default /api/v1/search"]
-        Graph["Raw Knowledge Graph"]
-    end
-
-    MT --> SM
-    SM -- "Basic Vector Search" --> API
-    API --> Graph
-```
-
----
-
-## 3. System Architecture
-The architecture utilizes a **Standalone Middleware** (Thalamus) that acts as a bridge between OpenClaw and Cognee.
+## 2. System Architecture
+Thalamus acts as the "Cognitive Traffic Controller" between OpenClaw and Cognee.
 
 ```mermaid
 graph TD
@@ -55,9 +33,9 @@ graph TD
 ```
 
 ### 📡 Event Pipeline
-Thalamus acts as an active participant in the ecosystem, notifying external services when internal state changes:
--   **MEMORIES_PUSHED**: Fired when new message turns are ingested.
--   **MEMORIES_SYNCED**: Fired when a session `sync` from the filesystem is complete.
+Thalamus notifies external services via webhooks when data is processed:
+-   **MEMORIES_PUSHED**: Fired when message turns are ingested via `/v1/ingest`.
+-   **MEMORIES_SYNCED**: Fired when session logs are crawled via `/v1/sync`.
 
 ### 🧠 Performance & Reliability (SQLite)
 Thalamus uses a local SQLite database for cross-agent metadata and performance tracking.
@@ -76,30 +54,37 @@ Thalamus can **pull** raw session data directly from OpenClaw's filesystem.
 
 ---
 
-## 4. Sequence: Data Flow
+## 3. Sequence: Data Flow
 
 ```mermaid
 sequenceDiagram
     participant OC as OpenClaw
     participant MW as Thalamus
     participant CG as Cognee
+    participant SL as SQLite (Relational)
     
     Note over OC,MW: Stage 1: Contextual Recall
     OC->>MW: GET /v1/context
     MW->>MW: Check LRU Cache
-    MW->>CG: Search Graph
-    MW-->>OC: Return <relevant-memories> block
+    par Graph Search
+        MW->>CG: Search Knowledge Graph
+    and Reliability Stats
+        MW->>SL: Fetch Tool Reputation
+    end
+    MW->>MW: Rank Tools by Success Rate
+    MW-->>OC: Return <relevant-memories> + <tool-reliability>
     
     Note over OC,MW: Stage 2: Memory Capture
     OC->>MW: POST /v1/ingest
     MW->>CG: Ingest / Cognify
+    MW->>SL: Update Metadata (if any)
     MW->>MW: Invalidate Cache
     MW-->>OC: 200 OK
 ```
 
 ---
 
-## 5. Implementation Details
+## 4. Implementation Details
 
 ### A. Context Caching
 -   **LRU Cache**: A simple time-to-live (TTL) cache prevents redundant graph searches for the same query during a session.
