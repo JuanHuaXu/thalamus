@@ -43,11 +43,48 @@ Triggers the background synthesis of conflicting or redundant facts.
     -   `agent_id`: (string) Filter for a specific agent pass.
 -   **Response**: { "status": "success", "nodes_processed": 5 }
 
-### D. Seeding Undo
+### D. Selective Memory Pruning (Bulk Dispute)
+Instantly hides nodes matching a search query from an agent's future context.
+-   **Endpoint**: `POST /v1/context/bulk-dispute`
+-   **Body**:
+    ```json
+    {
+      "agent_id": "string",
+      "query": "string",
+      "limit": 20
+    }
+    ```
+-   **Response**: { "status": "success", "nodes_hidden": 5, "query": "string" }
+
+### E. Seeding Undo
 Reverses a seeding operation for a specific agent by archiving facts.
 -   **Endpoint**: `POST /v1/seed/undo`
 -   **Body**: { "agent_id": "string" }
 -   **Response**: { "status": "success", "action": "ARCHIVED" }
+
+### F. Surgical Garbage Collection (Compaction)
+Physically deletes only facts with a specific status (default: `DISPUTED`) from SQLite.
+-   **Endpoint**: `POST /v1/context/compact`
+-   **Body**:
+    ```json
+    {
+      "agent_id": "string",
+      "status_filter": "DISPUTED"
+    }
+    ```
+-   **Response**: { "status": "success", "message": "Surgical compaction completed.", "agent_id": "string" }
+
+### G. Physical Memory Purge (Hard Reset)
+Permanently deletes all graph data and reputation scores for an agent.
+-   **Endpoint**: `DELETE /v1/context/purge`
+-   **Body**:
+    ```json
+    {
+      "agent_id": "string",
+      "confirm": true
+    }
+    ```
+-   **Response**: { "status": "success", "agent_id": "string", "cognee_datasets_deleted": 1 }
 
 ### D. Message Ingestion
 Used in the `agent_end` hook to send new conversation data to the graph.

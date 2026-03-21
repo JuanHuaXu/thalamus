@@ -21,5 +21,6 @@
   "llm_provider_url": "http://10.254.0.1/",
   "llm_model_name": "qwen3.5:9b",
   "llm_auto_pull": true,
+  "max_message_size": 1000000,
   "consolidation_cluster_size": 5
 }

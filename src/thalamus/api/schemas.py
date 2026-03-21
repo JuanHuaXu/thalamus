@@ -30,6 +30,19 @@ class DisputeRequest(BaseModel):
     agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     node_id: str
 
+class BulkDisputeRequest(BaseModel):
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    query: str
+    limit: int = 20
+
+class PurgeRequest(BaseModel):
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    confirm: bool = False
+
+class CompactRequest(BaseModel):
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    status_filter: str = "DISPUTED" # Can be DISPUTED or ARCHIVED
+
 class SyncRequest(BaseModel):
     agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     session_id: Optional[str] = None

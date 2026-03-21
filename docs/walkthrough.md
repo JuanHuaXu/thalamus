@@ -61,6 +61,49 @@ curl -X POST http://localhost:8080/v1/seed/undo \
      -H "Content-Type: application/json" \
      -d '{"agent_id": "undo_test_agent"}'
 ```
+
+---
+
+### 5. Selective Pruning (Bulk Dispute)
+If you accidentally ingest low-quality data (like a large base64 image or internal boilerplate), you can selectively "dispute" it based on a search query. This instantly hides the matching nodes from the agent's memory.
+
+```bash
+curl -X POST http://localhost:8080/v1/context/bulk-dispute \
+     -H "Content-Type: application/json" \
+     -d '{
+       "agent_id": "my_agent",
+       "query": "base64_image_data_snippet",
+       "limit": 50
+     }'
+```
+
+---
+
+### 6. Surgical Garbage Collection (Compaction)
+Physically removes only the "disputed" metadata from SQLite. This "forgets" the mistake permanently at the middleware level without touching your other valid memories.
+
+```bash
+curl -X POST http://localhost:8080/v1/context/compact \
+     -H "Content-Type: application/json" \
+     -d '{
+       "agent_id": "my_agent",
+       "status_filter": "DISPUTED"
+     }'
+```
+
+---
+
+### 7. Physical Memory Purge (Hard Reset)
+The "Nuclear Option". Permanently removes all traces of an agent's memory (chat logs and seeds) from Cognee and SQLite. Use this to reclaim space or wipe sensitive mistakes.
+
+```bash
+curl -X DELETE http://localhost:8080/v1/context/purge \
+     -H "Content-Type: application/json" \
+     -d '{
+       "agent_id": "my_agent",
+       "confirm": true
+     }'
+```
 ### 2. Thalamus OpenClaw Plugin (TypeScript)
 Acts as the lightweight bridge:
 - **Location**: `/Users/clawdius/.openclaw/extensions/thalamus/`

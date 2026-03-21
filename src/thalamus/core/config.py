@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     llm_provider_url: Optional[str] = None
     llm_model_name: str = "llama3:8b"
     llm_auto_pull: bool = True
+    
+    # Ingestion & Sanitization
+    max_message_size: int = 1000000 # 1MB limit for single message content
     consolidation_cluster_size: int = 5
 
     @classmethod

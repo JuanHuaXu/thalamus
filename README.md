@@ -7,6 +7,7 @@ Universal Memory Middleware for OpenClaw and Cognee.
 - **Evolutionary Knowledge Hub**: Automated feedback loop that rewards successful facts and penalizes "brain rot" based on real-world outcomes.
 - **Dynamic Scaling Mitigations**: Penalty-based knowledge decay and configurable ingestion queue limits.
 - **LLM Provider Orchestration**: Lazy-pull support for missing Ollama models during synthesis.
+- **Binary Ingestion Sanitizer**: Proactive detection of base64 "brain rot", stripping images (with metadata extraction), and text extraction from embedded PDFs.
 - **Latent Space Abstraction (LSA)**: 3-Stage retrieval (Surgical → Broad → Analogous) to bridge knowledge gaps and prevent hallucinations.
 - **Authoritative Web Seeding**: Bulk-ingest documentation, PDFs, and raw code directly into the graph.
 - **Consolidation Engine**: Background synthesis to merge conflicting facts and prune obsolete data.
@@ -41,6 +42,7 @@ Universal Memory Middleware for OpenClaw and Cognee.
 | `/v1/seed` | `POST` | Authoritative ingestion from documentation URLs. |
 | `/v1/sync` | `POST` | Sync OpenClaw session logs for an agent. |
 | `/v1/consolidate` | `POST` | Trigger background knowledge synthesis pass. |
+| `/v1/context/bulk-dispute` | `POST` | Selectively hide nodes matching a search query. |
 | `/v1/search` | `POST` | Low-level graph search. |
 | `/v1/tools/stats/{id}` | `GET` | Retrieve tool reliability metrics. |
 

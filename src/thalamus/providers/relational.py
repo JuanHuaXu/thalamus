@@ -148,11 +148,46 @@ class SQLiteRelationalProvider:
     async def add(self, request: IngestRequest) -> None:
         pass
 
+    async def bulk_dispute_nodes(self, agent_id: str, node_ids: List[str]):
+        """Instantly marks a specific list of nodes as DISPUTED for an agent context."""
+        if not node_ids:
+            return
+        now = int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            for node_id in node_ids:
+                await db.execute("""
+                    INSERT INTO fact_reputation (node_id, agent_id, failure_count, last_verified_at, status) 
+                    VALUES (?, ?, 10, ?, 'DISPUTED') 
+                    ON CONFLICT(node_id, agent_id) DO UPDATE SET 
+                        failure_count = failure_count + 10, 
+                        last_verified_at = ?,
+                        status = 'DISPUTED'
+                """, (node_id, agent_id, now, now))
+            await db.commit()
+
     async def bulk_dispute_agent_facts(self, agent_id: str):
         """Marks all facts for an agent as ARCHIVED, effectively 'undoing' their influence."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "UPDATE fact_reputation SET status = 'ARCHIVED' WHERE agent_id = ?",
                 (agent_id,)
+            )
+            await db.commit()
+
+    async def purge_agent_reputation(self, agent_id: str):
+        """Physically deletes all reputation entries for an agent."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM fact_reputation WHERE agent_id = ?",
+                (agent_id,)
+            )
+            await db.commit()
+
+    async def compact_agent_reputation(self, agent_id: str, status: str = "DISPUTED"):
+        """Surgically deletes only facts with a specific status (e.g. DISPUTED)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM fact_reputation WHERE agent_id = ? AND status = ?",
+                (agent_id, status)
             )
             await db.commit()

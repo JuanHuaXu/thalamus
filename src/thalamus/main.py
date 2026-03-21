@@ -12,11 +12,12 @@ import aiosqlite
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import logging
-from .api.schemas import IngestRequest, SearchRequest, ContextResponse, SearchResult, SyncRequest, SyncResponse, MemoryMessage, ToolExecutionEvent, ToolStatsResponse, SeedRequest, SeedResponse, SeedUndoRequest, DisputeRequest
+from .api.schemas import IngestRequest, SearchRequest, ContextResponse, SearchResult, SyncRequest, SyncResponse, MemoryMessage, ToolExecutionEvent, ToolStatsResponse, SeedRequest, SeedResponse, SeedUndoRequest, DisputeRequest, BulkDisputeRequest, PurgeRequest, CompactRequest
 from .providers.cognee import CogneeProvider
 from .providers.relational import SQLiteRelationalProvider
 from .providers.crawler import CrawlerProvider
 from .core.config import settings
+from .core.sanitizer import BinarySanitizer
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +38,17 @@ async def process_ingestion_queue():
         task = await ingestion_queue.get()
         try:
             if task["type"] == "ingest":
-                await cognee.add(task["request"])
+                request = task["request"]
+                for message in request.messages:
+                    message.content = BinarySanitizer.sanitize_message(message.content)
+                await cognee.add(request)
             elif task["type"] == "seed":
                 request = task["request"]
                 crawler = CrawlerProvider()
                 for url in request.urls:
                     content = crawler.fetch_and_clean(url)
                     if content:
+                        print(f"[Thalamus Worker] Extracted {len(content)} chars from {url}", flush=True)
                         dataset_name = f"doc_seed_{request.agent_id}"
                         await cognee.add_text(content, dataset_name=dataset_name)
                         await cognee.cognify(dataset_name=dataset_name)
@@ -149,7 +154,9 @@ async def get_context(q: str, agent_id: str = "default"):
 
     try:
         # --- STAGE 1 & 2: Broad Search with Post-Filtering ---
-        all_results = await cognee.search(q, limit=5)
+        # Target the specific documentation seed for this agent
+        dataset_name = f"doc_seed_{agent_id}"
+        all_results = await cognee.search(q, limit=5, dataset_name=dataset_name)
         
         # Track for feedback loop
         node_ids = {res.path for res in all_results}
@@ -247,6 +254,76 @@ async def dispute_context_node(request: DisputeRequest):
             del context_cache[k]
             
         return {"status": "success", "action": "DISPUTED", "node_id": request.node_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/context/bulk-dispute")
+async def bulk_dispute_context(request: BulkDisputeRequest):
+    """Marks all nodes matching a query as DISPUTED to prune accidental ingestions."""
+    try:
+        # 1. Find nodes
+        results = await cognee.search(request.query, limit=request.limit)
+        node_ids = [res.path for res in results]
+        
+        if not node_ids:
+            return {"status": "success", "nodes_hidden": 0, "message": "No matching nodes found."}
+
+        # 2. Dispute them in SQLite
+        await rdbms.bulk_dispute_nodes(request.agent_id, node_ids)
+        
+        # 3. Clear cache
+        keys_to_del = [k for k in context_cache.keys() if k.startswith(f"{request.agent_id}:")]
+        for k in keys_to_del:
+            del context_cache[k]
+            
+        return {"status": "success", "nodes_hidden": len(node_ids), "query": request.query}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/context/purge")
+async def purge_context(request: PurgeRequest):
+    """Hard-delete all memory data for an agent from Cognee and SQLite."""
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation required to permanently delete all memory.")
+    
+    try:
+        # 1. Delete Cognee Datasets (chat and seeds)
+        deleted_cognee_count = await cognee.delete_agent_datasets(request.agent_id)
+        
+        # 2. Delete SQLite reputation entries
+        await rdbms.purge_agent_reputation(request.agent_id)
+        
+        # 3. Clear Cache
+        keys_to_del = [k for k in context_cache.keys() if k.startswith(f"{request.agent_id}:")]
+        for k in keys_to_del:
+            del context_cache[k]
+            
+        return {
+            "status": "success", 
+            "message": "Physical purge completed.",
+            "agent_id": request.agent_id,
+            "cognee_datasets_deleted": deleted_cognee_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/context/compact")
+async def compact_context(request: CompactRequest):
+    """Surgically removes facts with a specific status from SQLite for an agent."""
+    try:
+        # 1. Physical delete from SQLite
+        await rdbms.compact_agent_reputation(request.agent_id, status=request.status_filter)
+        
+        # 2. Clear context cache (to ensure we re-evaluate reputation)
+        keys_to_del = [k for k in context_cache.keys() if k.startswith(f"{request.agent_id}:")]
+        for k in keys_to_del:
+            del context_cache[k]
+            
+        return {
+            "status": "success", 
+            "message": f"Surgical compaction completed for status: {request.status_filter}",
+            "agent_id": request.agent_id
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
