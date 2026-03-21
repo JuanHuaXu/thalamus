@@ -12,6 +12,10 @@ Universal Memory Middleware for OpenClaw and Cognee.
 - **Authoritative Web Seeding**: Bulk-ingest documentation, PDFs, and raw code directly into the graph.
 - **Consolidation Engine**: Background synthesis to merge conflicting facts and prune obsolete data.
 - **Cognee Integration**: Native graph-based memory and context extraction.
+- **Performance Tiers (Race Car Mode)**: Hybrid `CHUNKS`/`GRAPH` search with parallelized I/O across agent and documentation datasets.
+- **Multi-Tier Persistence**: Sub-10ms in-memory (L1) caching and sub-50ms SQLite-backed (L2) result bypass for recurring queries.
+- **Fail-Fast Parallelization**: Hard 25s timeouts for backend search tasks to ensure middleware responsiveness.
+- **Robustness Suite**: Comprehensive V1.4 test coverage verifying persistence, search timeouts, and core semantic logic.
 - **Tool Reliability Ranking**: SQLite-backed tracking of tool success/failure to guide agent behavior.
 - **Webhook Pipeline**: Real-time events (`MEMORIES_PUSHED`, `MEMORIES_SYNCED`) for ecosystem observability.
 

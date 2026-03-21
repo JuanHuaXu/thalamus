@@ -12,11 +12,11 @@ class CogneeProvider(StorageProvider):
             **( {"Authorization": f"Bearer {settings.cognee_api_key}"} if settings.cognee_api_key else {} )
         }
 
-    async def search(self, query: str, limit: int, dataset_name: Optional[str] = None) -> List[SearchResult]:
+    async def search(self, query: str, limit: int, dataset_name: Optional[str] = None, search_type: str = "GRAPH_COMPLETION") -> List[SearchResult]:
         async with httpx.AsyncClient(timeout=60.0) as client:
             payload = {
                 "query": query,
-                "search_type": "GRAPH_COMPLETION",
+                "search_type": search_type,
                 "limit": limit
             }
             if dataset_name:

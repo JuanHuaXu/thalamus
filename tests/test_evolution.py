@@ -2,6 +2,7 @@ import pytest
 import asyncio
 import os
 import time
+import aiosqlite
 from unittest.mock import MagicMock, patch
 from httpx import AsyncClient, ASGITransport
 from thalamus.main import app
@@ -28,6 +29,10 @@ async def test_db():
     provider = SQLiteRelationalProvider()
     provider.db_path = db_path
     await provider.initialize()
+    # v1.4 robustness: ensure cache is clean
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("DELETE FROM persistent_context_cache")
+        await db.commit()
     return provider
 
 @pytest.fixture

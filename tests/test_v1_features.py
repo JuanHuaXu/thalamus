@@ -3,6 +3,7 @@ import asyncio
 import os
 import io
 import time
+import aiosqlite
 from unittest.mock import MagicMock, patch, AsyncMock
 from httpx import AsyncClient, ASGITransport
 from thalamus.main import app
@@ -19,6 +20,10 @@ async def test_db():
     provider = SQLiteRelationalProvider()
     provider.db_path = db_path
     await provider.initialize()
+    # Ensure fresh L2 cache for every test to avoid mock bypass
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("DELETE FROM persistent_context_cache")
+        await db.commit()
     return provider
 
 @pytest.fixture

@@ -60,6 +60,17 @@ class SQLiteRelationalProvider:
                 )
             """)
             
+            # Persistent Context Cache (V1.3 Performance)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS persistent_context_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    agent_id TEXT,
+                    query TEXT,
+                    context_data TEXT,
+                    expiry_timestamp INTEGER
+                )
+            """)
+            
             # Column Migration
             cursor = await db.execute("PRAGMA table_info(fact_reputation)")
             columns = [row[1] for row in await cursor.fetchall()]
@@ -190,4 +201,30 @@ class SQLiteRelationalProvider:
                 "DELETE FROM fact_reputation WHERE agent_id = ? AND status = ?",
                 (agent_id, status)
             )
+            await db.commit()
+
+    async def get_cached_context(self, agent_id: str, query: str) -> Optional[str]:
+        """Fetch cached context result if it exists and hasn't expired."""
+        cache_key = f"{agent_id}:{query}"
+        now = int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT context_data FROM persistent_context_cache WHERE cache_key = ? AND expiry_timestamp > ?",
+                (cache_key, now)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+    async def set_cached_context(self, agent_id: str, query: str, context_data: str, ttl_seconds: int):
+        """Persist context result to SQLite with an expiry time."""
+        cache_key = f"{agent_id}:{query}"
+        expiry = int(time.time()) + ttl_seconds
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO persistent_context_cache (cache_key, agent_id, query, context_data, expiry_timestamp)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET 
+                    context_data = excluded.context_data,
+                    expiry_timestamp = excluded.expiry_timestamp
+            """, (cache_key, agent_id, query, context_data, expiry))
             await db.commit()

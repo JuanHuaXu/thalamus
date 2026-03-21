@@ -10,16 +10,19 @@ async def test_lsa_surgical_success():
         mock_search.return_value = [SearchResult(path="local_node", snippet="Agent Specific Info", score=1.0)]
         
         # We need to mock rdbms too since get_context calls it
-        with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_fact_reputations", return_value={}):
-            with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_tool_stats", return_value=[]):
+        # v1.4: must mock get_cached_context to ensure it hits the search mock
+        with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_cached_context", return_value=None), \
+             patch("thalamus.providers.relational.SQLiteRelationalProvider.get_fact_reputations", return_value={"local_node": {"status": "VERIFIED"}}), \
+             patch("thalamus.providers.relational.SQLiteRelationalProvider.get_tool_stats", return_value=[]):
                 response = await get_context(q="test query", agent_id="agent1")
                 
                 assert "<relevant-memories>" in response.context
                 assert "Agent Specific Info" in response.context
                 assert "<latent-abstraction>" not in response.context
-                assert mock_search.call_count == 1
-                # Check that it tried surgical first
-                assert mock_search.call_args[1]["dataset_name"] == "agent_agent1"
+                assert mock_search.call_count == 2 # v1.4: parallel search hit 2 datasets
+                # Check that it tried surgical (agent_agent1)
+                datasets = [call[1]["dataset_name"] for call in mock_search.call_args_list]
+                assert "agent_agent1" in datasets
 
 @pytest.mark.asyncio
 async def test_lsa_broad_fallback():
@@ -32,8 +35,10 @@ async def test_lsa_broad_fallback():
             [SearchResult(path="global_node", snippet="Global Shared Info", score=0.8)] # Broad
         ]
         
-        with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_fact_reputations", return_value={}):
-            with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_tool_stats", return_value=[]):
+        # v1.4: must mock get_cached_context to ensure it hits the search mock
+        with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_cached_context", return_value=None), \
+             patch("thalamus.providers.relational.SQLiteRelationalProvider.get_fact_reputations", return_value={}), \
+             patch("thalamus.providers.relational.SQLiteRelationalProvider.get_tool_stats", return_value=[]):
                 # Unique query to avoid cache hit
                 response = await get_context(q="fallback query", agent_id="agent1")
                 
@@ -55,8 +60,10 @@ async def test_lsa_analogous_expansion():
             [SearchResult(path="analog_node", snippet="Version Independent Info", score=0.7)] # Analogous
         ]
         
-        with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_fact_reputations", return_value={}):
-            with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_tool_stats", return_value=[]):
+        # v1.4: must mock get_cached_context to ensure it hits the search mock
+        with patch("thalamus.providers.relational.SQLiteRelationalProvider.get_cached_context", return_value=None), \
+             patch("thalamus.providers.relational.SQLiteRelationalProvider.get_fact_reputations", return_value={}), \
+             patch("thalamus.providers.relational.SQLiteRelationalProvider.get_tool_stats", return_value=[]):
                 # Query with a version number that will be stripped
                 response = await get_context(q="Mutation CLI v3.0 commands", agent_id="agent1")
                 

@@ -142,22 +142,82 @@ async def ingest_memories(request: IngestRequest):
         print(f"[Thalamus] Ingest error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def normalize_query(q: str) -> str:
+    """Canonicalize query to improve cache hit rate for minor variations."""
+    # 1. Lowercase and strip punctuation
+    q = re.sub(r'[^\w\s]', '', q.lower()).strip()
+    # 2. Sort tokens to handle word-order variations (e.g. "berkshire profit" vs "profit berkshire")
+    tokens = sorted(q.split())
+    return " ".join(tokens)
+
 @app.get("/v1/context", response_model=ContextResponse)
 async def get_context(q: str, agent_id: str = "default"):
     """
     Orchestrates search across multiple providers and returns a pre-formatted context block with caching.
     """
-    cache_key = f"{agent_id}:{q}"
+    # --- Query Canonicalization (V1.5) ---
+    norm_q = normalize_query(q)
+    cache_key = f"{agent_id}:{norm_q}"
+    
     if cache_key in context_cache:
-        print(f"[Thalamus] Cache hit for query: {q}")
+        print(f"[Thalamus] L1 Cache hit for query: {q} (norm: {norm_q})")
         return context_cache[cache_key]
 
+    # --- L2: Persistent Cache (SQLite) ---
+    cached_data = await rdbms.get_cached_context(agent_id, norm_q)
+    if cached_data:
+        try:
+            print(f"[Thalamus] L2 Cache hit for query: {q}")
+            result = ContextResponse(**json.loads(cached_data))
+            context_cache[cache_key] = result # Refill L1
+            return result
+        except Exception as e:
+            print(f"[Thalamus] L2 Cache corruption detected: {e}")
+
     try:
-        # --- STAGE 1 & 2: Broad Search with Post-Filtering ---
-        # Target the specific documentation seed for this agent
-        dataset_name = f"doc_seed_{agent_id}"
-        all_results = await cognee.search(q, limit=5, dataset_name=dataset_name)
+        # --- STAGE 1 & 2: Parallel Broad Search ---
+        # Query both chat history and documentation seeds simultaneously
+        import time
+        start_time = time.time()
         
+        agent_dataset = f"agent_{agent_id}"
+        seed_dataset = f"doc_seed_{agent_id}"
+        
+        # Parallelize the IO bound search calls with a hard timeout to prevent 60s+ hangs
+        search_tasks = [
+            asyncio.create_task(cognee.search(q, limit=2, dataset_name=agent_dataset, search_type="CHUNKS")),
+            asyncio.create_task(cognee.search(q, limit=2, dataset_name=seed_dataset, search_type="CHUNKS"))
+        ]
+        
+        done, pending = await asyncio.wait(
+            search_tasks,
+            timeout=25.0,
+            return_when=asyncio.ALL_COMPLETED
+        )
+        
+        all_results = []
+        for task in done:
+            try:
+                all_results.extend(task.result())
+            except Exception as e:
+                print(f"[Thalamus] Search task failed: {e}", flush=True)
+                
+        # Cancel any hanging tasks
+        for task in pending:
+            task.cancel()
+            print(f"[Thalamus] Search task timed out and was cancelled", flush=True)
+        
+        print(f"[Thalamus] Parallel search (done={len(done)}, pending={len(pending)}) completed in {time.time() - start_time:.4f}s", flush=True)
+        
+        # De-duplicate results by path to avoid edge-case pollution (especially in tests)
+        seen_paths = set()
+        unique_results = []
+        for res in all_results:
+            if res.path not in seen_paths:
+                unique_results.append(res)
+                seen_paths.add(res.path)
+        all_results = unique_results
+
         # Track for feedback loop
         node_ids = {res.path for res in all_results}
         last_served_nodes[agent_id] = node_ids
@@ -221,6 +281,13 @@ async def get_context(q: str, agent_id: str = "default"):
         )
         
         context_cache[cache_key] = response
+        
+        # --- L2: Populate Persistent Cache ---
+        try:
+            await rdbms.set_cached_context(agent_id, norm_q, response.model_dump_json(), ttl_seconds=settings.cache_ttl_seconds)
+        except Exception as e:
+            print(f"[Thalamus] L2 Cache population failed: {e}")
+
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

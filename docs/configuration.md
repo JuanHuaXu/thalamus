@@ -10,6 +10,7 @@ The Thalamus middleware is configured via `config.json`. This file governs how t
 | `host` | `string` | `"0.0.0.0"` | Host to bind the middleware to. |
 | `port` | `int` | `8080` | Port to bind the middleware to. |
 | `api_key` | `string` | `null` | Optional Thalamus API key for Bearer Auth. |
+| `cache_ttl_seconds` | `int` | `300` | TTL for both L1 (Memory) and L2 (Persistent) caches. |
 
 ### Cognee Backend
 | Key | Type | Default | Description |

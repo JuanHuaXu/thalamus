@@ -16,18 +16,20 @@ graph TD
     
     subgraph "Middleware Service (Python/FastAPI)"
         MW["Thalamus Middleware"]
-        Cache["LRU Cache"]
+        L1["L1: In-Memory Cache (RAM)"]
+        L2["L2: Persistent Cache (SQLite)"]
         Consol["Consolidation Engine"]
     end
     
     subgraph "Data Layer"
         CG["Cognee (Knowledge Graph)"]
-        SL["SQLite (Fact Reputation)"]
+        SL["SQLite (Fact Rep + L2 Cache)"]
     end
 
     OC_P -- "JSON API" --> MW
     MW -- "File Read (Sync)" --> Sessions
-    MW --> Cache
+    MW --> L1
+    MW --> L2
     MW -- "Seed / Fetch" --> Web["Web Docs"]
     MW --> CG
     MW --> SL
@@ -57,18 +59,29 @@ sequenceDiagram
     participant SL as SQLite (Reputation)
     participant CE as Consolidator
     
-    Note over OC,MW: Stage 1: Contextual Recall (3-Stage LSA)
+    Note over OC,MW: Stage 1: Contextual Recall (Parallel Race Car)
     OC->>MW: GET /v1/context
-    MW->>MW: Check LRU Cache
-    par Step 1: Surgical Search
-        MW->>CG: Search Agent-Specific Dataset
-    and Step 2: Broad Fallback
-        MW->>CG: Search Global Graph (if Step 1 empty)
-    and Step 3: Analogous Expansion
-        MW->>CG: Mutate Query (if Step 1+2 empty)
+    MW->>MW: Check L1 Cache (RAM)
+    MW-->>OC: [Hit] Return Context (~8ms)
+    
+    MW->>SL: L2 Cache: Check persistent_context_cache
+    MW-->>OC: [Hit] Return Context (~45ms)
+
+    Note right of MW: Cache MISS: Multi-Dataset Parallel Search
+    par Step 1: Broad Memory Search
+        MW->>CG: Search 'agent_{id}' (CHUNKS)
+    and Step 2: Documentation Search
+        MW->>CG: Search 'doc_seed_{id}' (CHUNKS)
+    and Step 3: Global Expansion
+        MW->>CG: Search default graph (FALLBACK)
     end
+    
+    Note right of MW: Hard 25s Timeout Orchestration
+    
     MW->>SL: Get Fact Reputation scores
-    MW->>MW: Filter out "Brain Rot" (low-trust nodes)
+    MW->>MW: De-duplicate & Filter nodes
+    MW->>SL: Populate L2 Cache
+    MW->>MW: Populate L1 Cache
     MW-->>OC: Return Vetted Context + <latent-abstraction>
     
     Note over OC,MW: Stage 2: Memory Capture & Feedback

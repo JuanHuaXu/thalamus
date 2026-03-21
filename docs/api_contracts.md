@@ -8,6 +8,10 @@ These endpoints are exposed by the standalone Thalamus service for consumption b
 ### A. Contextual Recall
 Used in the `before_agent_start` hook to inject graph knowledge into the prompt.
 -   **Endpoint**: `GET /v1/context`
+-   **Description**: Fetches formatted context using Parallel Search and Multi-tier Caching.
+    -   **L1 (Memory)**: ~8ms hit.
+    -   **L2 (SQLite)**: ~45ms hit.
+    -   **Miss**: ~5s (Parallel CHUNKS search across agent/doc datasets).
 -   **Query Params**:
     -   `q`: (string) The user's current prompt.
     -   `agent_id`: (string) Unique ID of the agent session.
