@@ -30,14 +30,21 @@ Authoritative ingestion of documentation directly into the Graph.
 -   **Body**:
     ```json
     {
-      "urls": ["string"],
-      "agent_id": "string"
+      "agent_id": "string",
+      "urls": ["string"]
     }
     ```
--   **Response**: { "status": "success", "urls_processed": 1, "facts_found": 10 }
+-   **Response** (202 Accepted): { "status": "queued", "urls_submitted": 1 }
 
-### C. Seeding Undo
-Reverses a seeding operation for a specific agent.
+### C. Resource Consolidation
+Triggers the background synthesis of conflicting or redundant facts.
+-   **Endpoint**: `POST /v1/consolidate`
+-   **Query Params**:
+    -   `agent_id`: (string) Filter for a specific agent pass.
+-   **Response**: { "status": "success", "nodes_processed": 5 }
+
+### D. Seeding Undo
+Reverses a seeding operation for a specific agent by archiving facts.
 -   **Endpoint**: `POST /v1/seed/undo`
 -   **Body**: { "agent_id": "string" }
 -   **Response**: { "status": "success", "action": "ARCHIVED" }

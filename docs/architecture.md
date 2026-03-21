@@ -95,3 +95,15 @@ sequenceDiagram
 ### B. Output Sanitization & Freshness
 -   **Tag Stripping**: Prevents prompt injection breakouts.
 -   **Freshness Weighting**: Natural decay ensures that older, un-reinforced knowledge drifts into "Historical Cold Storage."
+
+---
+
+## 5. Dynamic Scaling & Mitigations
+Thalamus is designed to handle high-volume streams by implementing proactive mitigations:
+- **Penalty-based Decay**: Nodes that cause agent failures receive a "Penalty" to their `dynamic_threshold`. This makes them increasingly likely to be filtered out of future context until they are either "Reset" (by success) or Archived.
+- **Queue Buffering**: Memory ingestion and seeding tasks are processed via an asynchronous `asyncio.Queue` with a configurable `maxsize` to prevent memory exhaustion during bulk operations.
+
+## 6. LLM Provider Orchestration
+The synthesis engine handles LLM provider availability through a "Lazy-Pull" mechanism:
+- **Auto-Pull**: If the configured Ollama model (e.g., `qwen3.5:9b`) is missing from the LAN provider, Thalamus automatically triggers a pull before continuing the synthesis pass.
+- **Robust Joining**: Provider URLs are handled robustly to ensure compatibility with various endpoint configurations (e.g., trailing slashes).

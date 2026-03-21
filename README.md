@@ -5,6 +5,8 @@ Universal Memory Middleware for OpenClaw and Cognee.
 ## Features
 - **Decoupled Architecture**: Thin OpenClaw plugin + Rich Python middleware.
 - **Evolutionary Knowledge Hub**: Automated feedback loop that rewards successful facts and penalizes "brain rot" based on real-world outcomes.
+- **Dynamic Scaling Mitigations**: Penalty-based knowledge decay and configurable ingestion queue limits.
+- **LLM Provider Orchestration**: Lazy-pull support for missing Ollama models during synthesis.
 - **Latent Space Abstraction (LSA)**: 3-Stage retrieval (Surgical → Broad → Analogous) to bridge knowledge gaps and prevent hallucinations.
 - **Authoritative Web Seeding**: Bulk-ingest documentation, PDFs, and raw code directly into the graph.
 - **Consolidation Engine**: Background synthesis to merge conflicting facts and prune obsolete data.
@@ -36,12 +38,15 @@ Universal Memory Middleware for OpenClaw and Cognee.
 | :--- | :--- | :--- |
 | `/v1/context` | `GET` | Fetches formatted context block (cached). |
 | `/v1/ingest` | `POST` | Manually ingest message turns into the graph. |
+| `/v1/seed` | `POST` | Authoritative ingestion from documentation URLs. |
 | `/v1/sync` | `POST` | Sync OpenClaw session logs for an agent. |
+| `/v1/consolidate` | `POST` | Trigger background knowledge synthesis pass. |
 | `/v1/search` | `POST` | Low-level graph search. |
 | `/v1/tools/stats/{id}` | `GET` | Retrieve tool reliability metrics. |
 
 ## Documentation
 - [Architecture Overview](docs/architecture.md)
+- [Configuration Reference](docs/configuration.md)
 - [API Contracts](docs/api_contracts.md)
 - [Implementation Walkthrough](docs/walkthrough.md)
 

@@ -11,10 +11,12 @@ Acts as the central relay station:
 - **Key File**: `src/thalamus/main.py`
 - **Features**:
     - **Context Recall**: `/v1/context` fetches Graph nodes from Cognee and ranks tools by reliability from SQLite.
+    - **Configuration Management**: Centralized `config.json` for hot-swapping providers and thresholds.
     - **LRU Caching**: Prompt-level context is cached with TTL to reduce latency.
     - **Session Sync**: `/v1/sync` allows crawling OpenClaw session files to ingest facts post-conversation.
     - **Webhooks**: Outbound notifications for `MEMORIES_PUSHED` and `MEMORIES_SYNCED`.
     - **Relational Storage**: High-performance persistence for tool reliability and performance metrics via SQLite.
+    - **Instrumented Worker**: Background process for ingestion, seeding, and building knowledge graphs via `cognify`.
 ### Verification Results
 The Evolutionary Knowledge Hub has been verified using a dedicated test suite (`tests/test_evolution.py`).
 
