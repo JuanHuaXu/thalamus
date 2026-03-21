@@ -155,3 +155,126 @@ async def test_crawler_brain_rot_detection():
         with patch("trafilatura.extract", return_value="Access Denied. CAPTCHA required."):
             content = CrawlerProvider.fetch_and_clean("https://blocked.com")
             assert content is None
+
+@pytest.mark.asyncio
+async def test_dynamic_threshold_decay(test_db):
+    agent_id = "test_dynamic_decay_agent"
+    node_id = "node_dynamic"
+
+    # Initial state: ACTIVE
+    await test_db.record_fact_interaction(node_id, agent_id, success=True, is_verified=True)
+    reps = await test_db.get_fact_reputations(agent_id)
+    assert reps[node_id]["status"] == "ACTIVE"
+    assert reps[node_id]["dynamic_threshold"] == settings.initial_dynamic_threshold
+
+    # Failures should increase dynamic_threshold
+    for i in range(3):
+        await test_db.record_fact_interaction(node_id, agent_id, success=False, is_verified=True)
+        reps = await test_db.get_fact_reputations(agent_id)
+        assert reps[node_id]["status"] == "ACTIVE" # Still active
+        assert reps[node_id]["dynamic_threshold"] > settings.initial_dynamic_threshold
+
+    # Successes should decrease dynamic_threshold
+    initial_threshold_after_failures = reps[node_id]["dynamic_threshold"]
+    for i in range(2):
+        await test_db.record_fact_interaction(node_id, agent_id, success=True, is_verified=True)
+        reps = await test_db.get_fact_reputations(agent_id)
+        assert reps[node_id]["status"] == "ACTIVE"
+        assert reps[node_id]["dynamic_threshold"] < initial_threshold_after_failures
+
+    # Test dispute based on dynamic threshold
+    # Reset and make it fail enough times to exceed the dynamic threshold
+    await test_db.record_fact_interaction(node_id, agent_id, success=True, is_verified=True) # Reset to initial threshold
+    reps = await test_db.get_fact_reputations(agent_id)
+    assert reps[node_id]["dynamic_threshold"] == settings.initial_dynamic_threshold
+
+    # Fail enough times to exceed the initial dynamic threshold
+    for i in range(settings.initial_dynamic_threshold):
+        await test_db.record_fact_interaction(node_id, agent_id, success=False, is_verified=True)
+        reps = await test_db.get_fact_reputations(agent_id)
+        if i < settings.initial_dynamic_threshold - 1:
+            assert reps[node_id]["status"] == "ACTIVE"
+        else:
+            assert reps[node_id]["status"] == "DISPUTED"
+
+@pytest.mark.asyncio
+async def test_is_verified_fact_decay(test_db):
+    agent_id = "test_decay_agent"
+    
+    # Node 1: Unverified. Should dispute after settings.unverified_dispute_threshold failures.
+    node_unverified = "node_unv"
+    for i in range(settings.unverified_dispute_threshold - 1):
+        await test_db.record_fact_interaction(node_unverified, agent_id, success=False, is_verified=False)
+        reps = await test_db.get_fact_reputations(agent_id)
+        assert reps[node_unverified]["status"] == "ACTIVE"
+    
+    await test_db.record_fact_interaction(node_unverified, agent_id, success=False, is_verified=False)
+    reps = await test_db.get_fact_reputations(agent_id)
+    assert reps[node_unverified]["status"] == "DISPUTED"
+    
+    # Node 2: Verified. Should still be ACTIVE after threshold-1 failures.
+    node_verified = "node_ver"
+    # First, log a success to set is_verified = 1
+    await test_db.record_fact_interaction(node_verified, agent_id, success=True, is_verified=True)
+    
+    for _ in range(settings.verified_dispute_threshold - 1):
+        await test_db.record_fact_interaction(node_verified, agent_id, success=False, is_verified=True)
+        reps = await test_db.get_fact_reputations(agent_id)
+        assert reps[node_verified]["status"] == "ACTIVE"
+        
+    await test_db.record_fact_interaction(node_verified, agent_id, success=False, is_verified=True)
+    reps = await test_db.get_fact_reputations(agent_id)
+    assert reps[node_verified]["status"] == "DISPUTED"
+
+@pytest.mark.asyncio
+async def test_async_ingest_queue(client):
+    payload = {
+        "agent_id": "test_agent_async",
+        "messages": [
+            {"role": "user", "content": "Is this fast?"},
+            {"role": "assistant", "content": "Success."}
+        ],
+        "is_verified": True
+    }
+    response = await client.post("/v1/ingest", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+
+@pytest.mark.asyncio
+async def test_reject_analogy_endpoint(client, test_db):
+    payload = {
+        "agent_id": "test_agent_async",
+        "node_id": "fake_analogy_id_123"
+    }
+    response = await client.post("/v1/context/dispute", json=payload)
+    assert response.status_code == 200
+    assert response.json()["action"] == "DISPUTED"
+    
+    reps = await test_db.get_fact_reputations("test_agent_async")
+    assert reps["fake_analogy_id_123"]["status"] == "DISPUTED"
+
+@pytest.mark.asyncio
+async def test_consolidation_engine(test_db):
+    from thalamus.core.consolidator import ConsolidationEngine
+    from unittest.mock import AsyncMock
+    mock_cognee = AsyncMock()
+    engine = ConsolidationEngine(mock_cognee, test_db)
+    
+    agent_id = "test_agent_consolidation"
+    
+    # Need settings.consolidation_cluster_size active nodes to trigger consolidation
+    for i in range(settings.consolidation_cluster_size):
+        await test_db.record_fact_interaction(f"node_{i}", agent_id, success=True, is_verified=True)
+        
+    pruned = await engine.run_consolidation_pass(agent_id)
+    assert pruned == settings.consolidation_cluster_size
+    
+    # Check that they are tombstoned
+    reps = await test_db.get_fact_reputations(agent_id)
+    for i in range(settings.consolidation_cluster_size):
+        assert reps[f"node_{i}"]["status"] == "CONSOLIDATED"
+        
+    # Check that a new wisdom node was created
+    wisdom_nodes = [node_id for node_id, rep in reps.items() if node_id.startswith("wisdom_")]
+    assert len(wisdom_nodes) == 1
+    assert reps[wisdom_nodes[0]]["status"] == "ACTIVE"

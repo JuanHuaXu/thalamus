@@ -6,9 +6,10 @@ class MemoryMessage(BaseModel):
     content: str
 
 class IngestRequest(BaseModel):
-    agent_id: str
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     conversation_id: Optional[str] = None
     messages: List[MemoryMessage]
+    is_verified: bool = False
 
 class SearchRequest(BaseModel):
     query: str
@@ -25,8 +26,12 @@ class SearchResult(BaseModel):
     score: float
     category: Optional[str] = None
 
+class DisputeRequest(BaseModel):
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    node_id: str
+
 class SyncRequest(BaseModel):
-    agent_id: str
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     session_id: Optional[str] = None
     deep_scan: bool = False
 
@@ -37,7 +42,7 @@ class SyncResponse(BaseModel):
     sessions_scanned: int
 
 class ToolExecutionEvent(BaseModel):
-    agent_id: str
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     tool_name: str
     status: str # "success", "failed", "blocked"
 
@@ -48,12 +53,12 @@ class ToolStat(BaseModel):
     blocks: int
 
 class ToolStatsResponse(BaseModel):
-    agent_id: str
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     stats: List[ToolStat]
 
 class SeedRequest(BaseModel):
     urls: List[str]
-    agent_id: str = "default"
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
 
 class SeedResponse(BaseModel):
     status: str
@@ -61,4 +66,4 @@ class SeedResponse(BaseModel):
     facts_found: int
 
 class SeedUndoRequest(BaseModel):
-    agent_id: str
+    agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")

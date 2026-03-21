@@ -7,12 +7,18 @@ import re
 from cachetools import TTLCache
 import httpx
 import time
+import asyncio
+import aiosqlite
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from .api.schemas import IngestRequest, SearchRequest, ContextResponse, SearchResult, SyncRequest, SyncResponse, MemoryMessage, ToolExecutionEvent, ToolStatsResponse, SeedRequest, SeedResponse, SeedUndoRequest
+import logging
+from .api.schemas import IngestRequest, SearchRequest, ContextResponse, SearchResult, SyncRequest, SyncResponse, MemoryMessage, ToolExecutionEvent, ToolStatsResponse, SeedRequest, SeedResponse, SeedUndoRequest, DisputeRequest
 from .providers.cognee import CogneeProvider
 from .providers.relational import SQLiteRelationalProvider
 from .providers.crawler import CrawlerProvider
 from .core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # HTTP Bearer Auth
 security = HTTPBearer(auto_error=False)
@@ -23,7 +29,40 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security
             raise HTTPException(status_code=401, detail="Invalid API Key")
     return True
 
-app = FastAPI(title="Thalamus Middleware", version="0.1.0", dependencies=[Depends(verify_api_key)])
+ingestion_queue = asyncio.Queue(maxsize=settings.ingestion_queue_max_size)
+
+async def process_ingestion_queue():
+    print("[Thalamus Worker] Ingestion loop started.", flush=True)
+    while True:
+        task = await ingestion_queue.get()
+        try:
+            if task["type"] == "ingest":
+                await cognee.add(task["request"])
+            elif task["type"] == "seed":
+                request = task["request"]
+                crawler = CrawlerProvider()
+                for url in request.urls:
+                    content = crawler.fetch_and_clean(url)
+                    if content:
+                        dataset_name = f"doc_seed_{request.agent_id}"
+                        await cognee.add_text(content, dataset_name=dataset_name)
+                        await cognee.cognify(dataset_name=dataset_name)
+                        print(f"[Thalamus Worker] Successfully seeded {url} to {dataset_name}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"[Thalamus Worker] Error processing task: {str(e)}", flush=True)
+            traceback.print_exc()
+        finally:
+            ingestion_queue.task_done()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await rdbms.initialize()
+    worker = asyncio.create_task(process_ingestion_queue())
+    yield
+    worker.cancel()
+
+app = FastAPI(title="Thalamus Middleware", version="0.1.0", dependencies=[Depends(verify_api_key)], lifespan=lifespan)
 
 # Initialize providers
 cognee = CogneeProvider()
@@ -33,10 +72,6 @@ rdbms = SQLiteRelationalProvider()
 context_cache = TTLCache(maxsize=1000, ttl=settings.cache_ttl_seconds)
 last_served_nodes = TTLCache(maxsize=100, ttl=600)  # agent_id -> set(node_ids)
 
-@app.on_event("startup")
-async def startup_event():
-    await rdbms.initialize()
-
 async def broadcast_event(event_type: str, agent_id: str, payload: dict):
     # ... (rest of broadcast_event as before)
     pass
@@ -44,24 +79,15 @@ async def broadcast_event(event_type: str, agent_id: str, payload: dict):
 # --- API Schemas extension ---
 # The SeedRequest and SeedResponse are now in api/schemas.py
 
-@app.post("/v1/seed", response_model=SeedResponse)
+@app.post("/v1/seed", status_code=202)
 async def seed_knowledge(request: SeedRequest):
     """Authoritative ingestion from a list of documentation URLs."""
-    crawler = CrawlerProvider()
-    
-    total_facts = 0
-    for url in request.urls:
-        content = crawler.fetch_and_clean(url)
-        if content:
-            # We treat the Doc URL as a 'virtual file'
-            # In a real system, we'd use a specialized Cognee config for docs
-            await cognee.add_text(content, dataset_name=f"doc_seed_{request.agent_id}")
-            total_facts += 1
-            
-    if total_facts > 0:
-        await cognee.cognify(dataset_name=f"doc_seed_{request.agent_id}")
-        
-    return SeedResponse(status="success", urls_processed=len(request.urls), facts_found=total_facts)
+    await ingestion_queue.put({"type": "seed", "request": request})
+    return {"status": "queued", "urls_submitted": len(request.urls)}
+
+@app.get("/v1/seed/status")
+async def seed_status():
+    return {"status": "success", "queue_size": ingestion_queue.qsize()}
 
 @app.post("/v1/seed/undo")
 async def undo_seed(request: SeedUndoRequest):
@@ -85,7 +111,7 @@ async def ingest_memories(request: IngestRequest):
     """Ingests messages and triggers the automated feedback loop (Scientific Method)."""
     try:
         # 1. Ingest to Cognee
-        await cognee.add(request)
+        await ingestion_queue.put({"type": "ingest", "request": request})
         
         # 2. AUTOMATED FEEDBACK LOOP
         last_message = request.messages[-1].content.lower()
@@ -95,9 +121,9 @@ async def ingest_memories(request: IngestRequest):
         if is_failure or is_success:
             nodes_to_update = last_served_nodes.get(request.agent_id, set())
             if nodes_to_update:
-                print(f"[Thalamus] Feedback for {len(nodes_to_update)} nodes: {'SUCCESS' if is_success else 'FAILURE'}")
+                print(f"[Thalamus] Feedback for {len(nodes_to_update)} nodes: {'SUCCESS' if is_success else 'FAILURE'} (Verified: {request.is_verified})")
                 for node_id in nodes_to_update:
-                    await rdbms.record_fact_interaction(node_id, request.agent_id, success=is_success)
+                    await rdbms.record_fact_interaction(node_id, request.agent_id, success=is_success, is_verified=request.is_verified)
                 last_served_nodes.pop(request.agent_id, None)
 
         # 3. Cache Invalidation
@@ -145,7 +171,7 @@ async def get_context(q: str, agent_id: str = "default"):
                     continue
                 vetted_memories.append(f"- [{mem.category or 'Memory'}] {sanitize(mem.snippet)}")
             else:
-                latent_memories.append(f"- [{mem.category or 'Analogy'}] {sanitize(mem.snippet)}")
+                latent_memories.append(f"- [Analogy ID: {mem.path}] {sanitize(mem.snippet)}")
 
         # --- STAGE 3: Mutation Fallback (Only if literally nothing) ---
         if not vetted_memories and not latent_memories:
@@ -153,7 +179,7 @@ async def get_context(q: str, agent_id: str = "default"):
             if mutated_q and mutated_q != q:
                 extra_results = await cognee.search(mutated_q, limit=3)
                 for mem in extra_results:
-                    latent_memories.append(f"- [{mem.category or 'Analogy'}] {sanitize(mem.snippet)}")
+                    latent_memories.append(f"- [Analogy ID: {mem.path}] {sanitize(mem.snippet)}")
 
         # Format blocks
         mem_block = f"<relevant-memories>\n" + "\n".join(vetted_memories) + "\n</relevant-memories>" if vetted_memories else ""
@@ -197,6 +223,30 @@ async def manual_search(request: SearchRequest):
     """Deep search across the Cognee graph."""
     try:
         return await cognee.search(request.query, limit=request.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/context/dispute")
+async def dispute_context_node(request: DisputeRequest):
+    """Instantly marks a specific node as DISPUTED for an agent context."""
+    try:
+        async with aiosqlite.connect(rdbms.db_path) as db:
+            now = int(time.time())
+            await db.execute("""
+                INSERT INTO fact_reputation (node_id, agent_id, failure_count, last_verified_at, status) 
+                VALUES (?, ?, 10, ?, 'DISPUTED') 
+                ON CONFLICT(node_id, agent_id) DO UPDATE SET 
+                    failure_count = failure_count + 10, 
+                    last_verified_at = ?,
+                    status = 'DISPUTED'
+            """, (request.node_id, request.agent_id, now, now))
+            await db.commit()
+            
+        keys_to_del = [k for k in context_cache.keys() if k.startswith(f"{request.agent_id}:")]
+        for k in keys_to_del:
+            del context_cache[k]
+            
+        return {"status": "success", "action": "DISPUTED", "node_id": request.node_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

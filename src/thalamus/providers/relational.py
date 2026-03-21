@@ -18,6 +18,9 @@ class SQLiteRelationalProvider:
     async def initialize(self):
         """Initializes the database schema asynchronously."""
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
+            
             # Tool Stats
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS tool_stats (
@@ -37,8 +40,10 @@ class SQLiteRelationalProvider:
                     agent_id TEXT,
                     success_count INTEGER DEFAULT 0,
                     failure_count INTEGER DEFAULT 0,
+                    dynamic_threshold INTEGER DEFAULT 5,
                     last_verified_at INTEGER,
                     status TEXT DEFAULT 'ACTIVE',
+                    is_verified INTEGER DEFAULT 0,
                     PRIMARY KEY (node_id, agent_id)
                 )
             """)
@@ -54,6 +59,12 @@ class SQLiteRelationalProvider:
                     summary TEXT
                 )
             """)
+            
+            # Column Migration
+            cursor = await db.execute("PRAGMA table_info(fact_reputation)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "dynamic_threshold" not in columns:
+                await db.execute("ALTER TABLE fact_reputation ADD COLUMN dynamic_threshold INTEGER DEFAULT 5")
             
             await db.commit()
 
@@ -87,33 +98,49 @@ class SQLiteRelationalProvider:
 
     # --- Evolutionary Knowledge Methods ---
 
-    async def record_fact_interaction(self, node_id: str, agent_id: str, success: bool):
-        """Weights the reputation of a specific fact node based on whether its use led to success."""
+    async def record_fact_interaction(self, node_id: str, agent_id: str, success: bool, is_verified: bool = False):
+        """Record a fact hit or miss and update its reputation."""
         now = int(time.time())
         async with aiosqlite.connect(self.db_path) as db:
             if success:
+                # On success, we reset failures and decay the dynamic threshold back towards initial
                 await db.execute("""
-                    INSERT INTO fact_reputation (node_id, agent_id, success_count, last_verified_at) 
-                    VALUES (?, ?, 1, ?) 
-                    ON CONFLICT(node_id, agent_id) DO UPDATE SET success_count = success_count + 1, last_verified_at = ?
-                """, (node_id, agent_id, now, now))
+                    INSERT INTO fact_reputation (node_id, agent_id, success_count, failure_count, dynamic_threshold, last_verified_at, is_verified)
+                    VALUES (?, ?, 1, 0, ?, ?, ?)
+                    ON CONFLICT(node_id, agent_id) DO UPDATE SET 
+                        success_count = success_count + 1,
+                        failure_count = 0,
+                        dynamic_threshold = MAX(?, dynamic_threshold - 1),
+                        last_verified_at = ?,
+                        is_verified = CASE WHEN ? = 1 THEN 1 ELSE is_verified END
+                """, (node_id, agent_id, settings.initial_dynamic_threshold, now, 1 if is_verified else 0, settings.initial_dynamic_threshold, now, 1 if is_verified else 0))
             else:
+                # On failure, we increment failure count and increase the dynamic threshold (penalty)
                 await db.execute("""
-                    INSERT INTO fact_reputation (node_id, agent_id, failure_count, last_verified_at) 
-                    VALUES (?, ?, 1, ?) 
+                    INSERT INTO fact_reputation (node_id, agent_id, success_count, failure_count, dynamic_threshold, last_verified_at, is_verified)
+                    VALUES (?, ?, 0, 1, ?, ?, ?)
                     ON CONFLICT(node_id, agent_id) DO UPDATE SET 
                         failure_count = failure_count + 1, 
+                        dynamic_threshold = dynamic_threshold + 1,
                         last_verified_at = ?,
-                        status = CASE WHEN failure_count + 1 >= 3 THEN 'DISPUTED' ELSE status END
-                """, (node_id, agent_id, now, now))
+                        status = CASE WHEN failure_count + 1 >= (CASE WHEN fact_reputation.is_verified = 1 THEN ? ELSE ? END) 
+                                     OR failure_count + 1 >= dynamic_threshold THEN 'DISPUTED' ELSE status END
+                """, (node_id, agent_id, settings.initial_dynamic_threshold + 1, now, 1 if is_verified else 0, now, settings.verified_dispute_threshold, settings.unverified_dispute_threshold))
             await db.commit()
 
     async def get_fact_reputations(self, agent_id: str) -> dict:
-        """Returns a mapping of node_id to reputation metadata."""
+        """Fetch reputation scores for all facts associated with an agent."""
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT node_id, success_count, failure_count, status FROM fact_reputation WHERE agent_id = ?", (agent_id,)) as cursor:
-                rows = await cursor.fetchall()
-                return {row[0]: {"success": row[1], "failure": row[2], "status": row[3]} for row in rows}
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM fact_reputation WHERE agent_id = ?", (agent_id,))
+            rows = await cursor.fetchall()
+            return {row["node_id"]: {
+                "success": row["success_count"],
+                "failure": row["failure_count"],
+                "dynamic_threshold": row["dynamic_threshold"],
+                "status": row["status"],
+                "is_verified": bool(row["is_verified"])
+            } for row in rows}
 
     async def search(self, query: str, limit: int) -> List[SearchResult]:
         return []

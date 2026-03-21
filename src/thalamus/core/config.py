@@ -24,6 +24,18 @@ class Settings(BaseSettings):
     webhook_urls: List[str] = []
     webhook_secret: Optional[str] = None
 
+    # Scaling & Mitigation Parameters
+    verified_dispute_threshold: int = 5
+    unverified_dispute_threshold: int = 2
+    initial_dynamic_threshold: int = 5
+    ingestion_queue_max_size: int = 1000
+    crawler_timeout: float = 15.0
+    crawler_user_agent: str = "Thalamus/0.1.0"
+    llm_provider_url: Optional[str] = None
+    llm_model_name: str = "llama3:8b"
+    llm_auto_pull: bool = True
+    consolidation_cluster_size: int = 5
+
     @classmethod
     def load(cls):
         # Look for config.json in the project root (3 levels up from this file)

@@ -1,6 +1,7 @@
 import trafilatura
 from typing import Optional
 import logging
+from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +29,30 @@ class CrawlerProvider:
         try:
             import httpx
             import io
+            import urllib.parse
+            import socket
+            import ipaddress
+
+            parsed = urllib.parse.urlparse(url)
+            if parsed.hostname:
+                try:
+                    ip = socket.gethostbyname(parsed.hostname)
+                    if ipaddress.ip_address(ip).is_private or ipaddress.ip_address(ip).is_loopback:
+                        logger.error(f"[Thalamus] SSRF Prevention: Blocked internal network address {url}")
+                        return None
+                except socket.gaierror:
+                    logger.error(f"[Thalamus] SSRF Prevention: Could not resolve hostname {parsed.hostname}")
+                    return None
+
             logger.info(f"[Thalamus] Crawling: {url}")
             
             headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": settings.crawler_user_agent,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/pdf",
                 "Accept-Language": "en-US,en;q=0.9"
             }
             
-            with httpx.Client(follow_redirects=True, timeout=15.0) as client:
+            with httpx.Client(follow_redirects=True, timeout=settings.crawler_timeout) as client:
                 response = client.get(url, headers=headers)
                 response.raise_for_status()
                 

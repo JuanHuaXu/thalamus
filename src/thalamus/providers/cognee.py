@@ -18,7 +18,7 @@ class CogneeProvider(StorageProvider):
             # version throws 400 on 'dataset_names'. We filter in Thalamus instead.
             payload = {
                 "query": query,
-                "search_type": "GRAPH",
+                "search_type": "GRAPH_COMPLETION",
                 "limit": limit
             }
 
@@ -30,15 +30,23 @@ class CogneeProvider(StorageProvider):
             response.raise_for_status()
             results = response.json()
             
-            return [
-                SearchResult(
-                    path=res.get("metadata", {}).get("path", "unknown"),
-                    snippet=res.get("text", res.get("snippet", "")),
-                    score=res.get("score", 1.0),
-                    category=res.get("metadata", {}).get("category")
-                )
-                for res in (results or [])
-            ]
+            search_results = []
+            for res in (results or []):
+                if isinstance(res, str):
+                    search_results.append(SearchResult(
+                        path="graph_completion",
+                        snippet=res,
+                        score=1.0,
+                        category="SYNTHESIS"
+                    ))
+                else:
+                    search_results.append(SearchResult(
+                        path=res.get("metadata", {}).get("path", "unknown") if isinstance(res.get("metadata"), dict) else "unknown",
+                        snippet=res.get("text", res.get("snippet", str(res))),
+                        score=res.get("score", 1.0),
+                        category=res.get("metadata", {}).get("category") if isinstance(res.get("metadata"), dict) else None
+                    ))
+            return search_results
 
     async def add(self, request: IngestRequest) -> None:
         """Standard ingestion for conversation messages."""
