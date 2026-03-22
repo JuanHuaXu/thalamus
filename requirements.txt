@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+aiosqlite
+trafilatura
+cachetools
+asyncio
+pydantic-settings
+pypdf

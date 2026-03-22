@@ -1,6 +1,7 @@
 import trafilatura
 from typing import Optional
 import logging
+import time
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,32 +53,56 @@ class CrawlerProvider:
                 "Accept-Language": "en-US,en;q=0.9"
             }
             
-            with httpx.Client(follow_redirects=True, timeout=settings.crawler_timeout) as client:
-                response = client.get(url, headers=headers)
-                response.raise_for_status()
-                
-                content_type = response.headers.get("Content-Type", "").lower()
-                is_pdf = "application/pdf" in content_type or url.lower().endswith(".pdf")
-                is_code = CrawlerProvider._is_raw_code(content_type, url)
+            # Granular timeouts for high-latency investor portals
+            timeout_cfg = httpx.Timeout(
+                timeout=settings.crawler_timeout,
+                connect=10.0,
+                read=settings.crawler_timeout
+            )
+            
+            for attempt in range(1, 4):
+                try:
+                    with httpx.Client(follow_redirects=True, timeout=timeout_cfg, http2=False) as client:
+                        start_fetch = time.time()
+                        response = client.get(url, headers=headers)
+                        response.raise_for_status()
+                        
+                        content_type = response.headers.get("Content-Type", "").lower()
+                        content_bytes = response.content
+                        fetch_time = time.time() - start_fetch
+                        logger.info(f"[Thalamus] Fetched {len(content_bytes)} bytes in {fetch_time:.2f}s (Attempt {attempt})")
+                        break
+                except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+                    if attempt == 3:
+                        logger.error(f"[Thalamus] Crawler failed after 3 attempts on {url}: {e}")
+                        return None
+                    logger.warning(f"[Thalamus] Attempt {attempt} failed ({e}). Retrying in 2s...")
+                    time.sleep(2)
+                except Exception as e:
+                    logger.error(f"[Thalamus] Crawler fatal error on {url}: {e}")
+                    return None
 
-                # 1. Handle PDFs
-                if is_pdf:
-                    logger.info(f"[Thalamus] Detected PDF for {url}. Extracting text...")
-                    return CrawlerProvider._extract_pdf(response.content)
+            is_pdf = "application/pdf" in content_type or url.lower().endswith(".pdf")
+            is_code = CrawlerProvider._is_raw_code(content_type, url)
 
-                # 2. Handle Raw Code / Plain Text
-                if is_code:
-                    logger.info(f"[Thalamus] Detected Raw Code/Text for {url}")
-                    content = response.text
-                else:
-                    # 3. Handle HTML (Default)
-                    downloaded = response.text
-                    content = trafilatura.extract(
-                        downloaded, 
-                        include_comments=False,
-                        include_tables=True,
-                        no_fallback=False
-                    )
+            # 1. Handle PDFs
+            if is_pdf:
+                logger.info(f"[Thalamus] Detected PDF for {url}. Extracting text...")
+                content = CrawlerProvider._extract_pdf(content_bytes)
+
+            # 2. Handle Raw Code / Plain Text
+            elif is_code:
+                logger.info(f"[Thalamus] Detected Raw Code/Text for {url}")
+                content = response.text
+            else:
+                # 3. Handle HTML (Default)
+                downloaded = response.text
+                content = trafilatura.extract(
+                    downloaded, 
+                    include_comments=False,
+                    include_tables=True,
+                    no_fallback=False
+                )
 
             if not content:
                 logger.warning(f"[Thalamus] No content extracted from: {url}")

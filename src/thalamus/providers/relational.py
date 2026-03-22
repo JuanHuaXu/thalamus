@@ -70,6 +70,19 @@ class SQLiteRelationalProvider:
                     expiry_timestamp INTEGER
                 )
             """)
+
+            # V2.0 Seed Job Tracking
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS seed_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    agent_id TEXT,
+                    status TEXT,
+                    urls TEXT,
+                    results TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                )
+            """)
             
             # Column Migration
             cursor = await db.execute("PRAGMA table_info(fact_reputation)")
@@ -215,16 +228,85 @@ class SQLiteRelationalProvider:
                 row = await cursor.fetchone()
                 return row[0] if row else None
 
-    async def set_cached_context(self, agent_id: str, query: str, context_data: str, ttl_seconds: int):
+    async def set_cached_context(self, agent_id: str, query_norm: str, result: str, ttl_seconds: int = 300) -> None:
         """Persist context result to SQLite with an expiry time."""
-        cache_key = f"{agent_id}:{query}"
-        expiry = int(time.time()) + ttl_seconds
+        expires_at = int(time.time()) + ttl_seconds
+        # The cache_key is now a composite of agent_id and query_norm
+        cache_key = f"{agent_id}:{query_norm}"
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
+            await db.execute(
+                """
                 INSERT INTO persistent_context_cache (cache_key, agent_id, query, context_data, expiry_timestamp)
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(cache_key) DO UPDATE SET 
                     context_data = excluded.context_data,
                     expiry_timestamp = excluded.expiry_timestamp
-            """, (cache_key, agent_id, query, context_data, expiry))
+                """,
+                (cache_key, agent_id, query_norm, result, expires_at)
+            )
             await db.commit()
+
+    async def delete_cached_context(self, agent_id: str, query_norm: str) -> None:
+        """Surgically remove a single cache entry."""
+        cache_key = f"{agent_id}:{query_norm}"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM persistent_context_cache WHERE cache_key = ?",
+                (cache_key,)
+            )
+            await db.commit()
+
+    async def clear_all_cached_context(self, agent_id: Optional[str] = None) -> int:
+        """Clear all cache entries, optionally filtered by agent."""
+        sql = "DELETE FROM persistent_context_cache"
+        params = []
+        if agent_id:
+            sql += " WHERE agent_id = ?"
+            params.append(agent_id)
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(sql, params) as cursor:
+                rows_deleted = cursor.rowcount
+            await db.commit()
+            return rows_deleted
+
+    async def create_seed_job(self, job_id: str, agent_id: str, urls: List[str]) -> None:
+        """Initialize a new seeding job in the registry."""
+        import json
+        now = int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO seed_jobs (job_id, agent_id, status, urls, created_at, updated_at)
+                VALUES (?, ?, 'PENDING', ?, ?, ?)
+            """, (job_id, agent_id, json.dumps(urls), now, now))
+            await db.commit()
+
+    async def update_seed_job_status(self, job_id: str, status: str, results: Optional[dict] = None) -> None:
+        """Update the status and results of a seeding job."""
+        import json
+        now = int(time.time())
+        results_json = json.dumps(results) if results else None
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE seed_jobs SET status = ?, results = ?, updated_at = ?
+                WHERE job_id = ?
+            """, (status, results_json, now, job_id))
+            await db.commit()
+
+    async def get_seed_job(self, job_id: str) -> Optional[dict]:
+        """Retrieve detailed status of a seeding job."""
+        import json
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT * FROM seed_jobs WHERE job_id = ?", (job_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "job_id": row[0],
+                        "agent_id": row[1],
+                        "status": row[2],
+                        "urls": json.loads(row[3]) if row[3] else [],
+                        "results": json.loads(row[4]) if row[4] else None,
+                        "created_at": row[5],
+                        "updated_at": row[6]
+                    }
+                return None

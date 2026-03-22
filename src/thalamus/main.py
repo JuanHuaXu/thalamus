@@ -36,6 +36,7 @@ async def process_ingestion_queue():
     print("[Thalamus Worker] Ingestion loop started.", flush=True)
     while True:
         task = await ingestion_queue.get()
+        job_id = task.get("job_id")
         try:
             if task["type"] == "ingest":
                 request = task["request"]
@@ -44,21 +45,77 @@ async def process_ingestion_queue():
                 await cognee.add(request)
             elif task["type"] == "seed":
                 request = task["request"]
-                crawler = CrawlerProvider()
-                for url in request.urls:
-                    content = crawler.fetch_and_clean(url)
-                    if content:
-                        print(f"[Thalamus Worker] Extracted {len(content)} chars from {url}", flush=True)
-                        dataset_name = f"doc_seed_{request.agent_id}"
-                        await cognee.add_text(content, dataset_name=dataset_name)
+                dataset_name = f"doc_seed_{request.agent_id}"
+                if job_id:
+                    await rdbms.update_seed_job_status(job_id, "RUNNING")
+                
+                # V1.9 Direct Ingestion Fallback
+                success_count = 0
+                error_log = []
+                if request.content:
+                    try:
+                        print(f"[Thalamus Worker] Direct Ingestion: Seeding provided content to {dataset_name}", flush=True)
+                        await cognee.add_text(request.content, dataset_name=dataset_name)
                         await cognee.cognify(dataset_name=dataset_name)
-                        print(f"[Thalamus Worker] Successfully seeded {url} to {dataset_name}", flush=True)
+                        print(f"[Thalamus Worker] Successfully seeded direct content to {dataset_name}", flush=True)
+                        success_count += 1
+                    except Exception as e:
+                        error_log.append(f"Direct Ingestion error: {str(e)}")
+                
+                # Crawler Logic (Standard)
+                if request.urls:
+                    crawler = CrawlerProvider()
+                    for url in request.urls:
+                        try:
+                            content = crawler.fetch_and_clean(url)
+                            if content:
+                                print(f"[Thalamus Worker] Extracted {len(content)} chars from {url}", flush=True)
+                                await cognee.add_text(content, dataset_name=dataset_name)
+                                await cognee.cognify(dataset_name=dataset_name)
+                                print(f"[Thalamus Worker] Successfully seeded {url} to {dataset_name}", flush=True)
+                                success_count += 1
+                            else:
+                                error_log.append(f"Crawler returned no content for {url}")
+                        except Exception as e:
+                            error_log.append(f"Crawler error on {url}: {str(e)}")
+
+                if job_id:
+                    status = "COMPLETED" if not error_log else ("PARTIAL" if success_count > 0 else "FAILED")
+                    results = {"success_count": success_count, "errors": error_log}
+                    await rdbms.update_seed_job_status(job_id, status, results)
+
         except Exception as e:
             import traceback
             print(f"[Thalamus Worker] Error processing task: {str(e)}", flush=True)
             traceback.print_exc()
+            if job_id:
+                await rdbms.update_seed_job_status(job_id, "FAILED", {"error": str(e)})
         finally:
             ingestion_queue.task_done()
+
+async def extract_topic_entities(q: str) -> List[str]:
+    """Uses the configured LLM to identify the primary subjects/entities of the query."""
+    if not settings.llm_provider_url:
+        return []
+        
+    base_url = settings.llm_provider_url.rstrip("/")
+    prompt = f"Identify the primary subject/entity of the following query. Return ONLY the entity name(s) or core nouns, comma-separated. If it's a general question, return 'none'.\nQuery: {q}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(f"{base_url}/api/generate", json={
+                "model": settings.llm_model_name,
+                "prompt": prompt,
+                "stream": False
+            })
+            resp.raise_for_status()
+            raw_entities = resp.json().get("response", "").strip().lower()
+            if raw_entities == "none" or not raw_entities:
+                return []
+            return [e.strip() for e in raw_entities.split(",") if len(e.strip()) >= 3]
+    except Exception as e:
+        print(f"[Thalamus] LLM Topic Extraction failed: {e}. Falling back to heuristic.")
+        return []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,14 +141,24 @@ async def broadcast_event(event_type: str, agent_id: str, payload: dict):
 # --- API Schemas extension ---
 # The SeedRequest and SeedResponse are now in api/schemas.py
 
-@app.post("/v1/seed", status_code=202)
+@app.post("/v1/seed", response_model=SeedResponse, status_code=202)
 async def seed_knowledge(request: SeedRequest):
     """Authoritative ingestion from a list of documentation URLs."""
-    await ingestion_queue.put({"type": "seed", "request": request})
-    return {"status": "queued", "urls_submitted": len(request.urls)}
+    import uuid
+    job_id = f"job_{uuid.uuid4().hex[:8]}"
+    await rdbms.create_seed_job(job_id, request.agent_id, request.urls)
+    
+    await ingestion_queue.put({"type": "seed", "request": request, "job_id": job_id})
+    return SeedResponse(status="queued", job_id=job_id, urls_submitted=len(request.urls))
 
 @app.get("/v1/seed/status")
-async def seed_status():
+async def seed_status(job_id: Optional[str] = None):
+    if job_id:
+        job = await rdbms.get_seed_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        return job
+        
     return {"status": "success", "queue_size": ingestion_queue.qsize()}
 
 @app.post("/v1/seed/undo")
@@ -218,6 +285,25 @@ async def get_context(q: str, agent_id: str = "default"):
                 seen_paths.add(res.path)
         all_results = unique_results
 
+        # --- LLM-Powered Topic Isolation (V1.8) ---
+        core_topics = await extract_topic_entities(q)
+        if not core_topics:
+            # Fallback to heuristic keywords if LLM failed
+            core_topics = [w for w in re.findall(r'\b\w{4,}\b', q.lower()) if w not in ["what", "how", "does", "the", "financial", "report", "performance", "analysis"]]
+            
+        def is_topic_relevant(snippet: str) -> bool:
+            if not core_topics: return True
+            snippet_lower = snippet.lower()
+            return any(topic in snippet_lower for topic in core_topics)
+
+        # Stage 1/2 Filtering
+        vetted_by_topic = [res for res in all_results if is_topic_relevant(res.snippet)]
+        if all_results and not vetted_by_topic:
+            print(f"[Thalamus] WARNING: Stage 1/2 results blocked by Topic Guard {core_topics}")
+            all_results = []
+        else:
+            all_results = vetted_by_topic
+
         # Track for feedback loop
         node_ids = {res.path for res in all_results}
         last_served_nodes[agent_id] = node_ids
@@ -240,13 +326,18 @@ async def get_context(q: str, agent_id: str = "default"):
             else:
                 latent_memories.append(f"- [Analogy ID: {mem.path}] {sanitize(mem.snippet)}")
 
-        # --- STAGE 3: Mutation Fallback (Only if literally nothing) ---
+        # --- STAGE 3: Mutation Fallback (LSA) ---
         if not vetted_memories and not latent_memories:
             mutated_q = re.sub(r'\b(v?\d+\.\d+)\b', '', q).strip()
             if mutated_q and mutated_q != q:
+                print(f"[Thalamus] Running LSA fallback for {mutated_q}")
                 extra_results = await cognee.search(mutated_q, limit=3)
+                # Apply Topic Guard to LSA too!
                 for mem in extra_results:
-                    latent_memories.append(f"- [Analogy ID: {mem.path}] {sanitize(mem.snippet)}")
+                    if is_topic_relevant(mem.snippet):
+                        latent_memories.append(f"- [Analogy ID: {mem.path}] {sanitize(mem.snippet)}")
+                    else:
+                        print(f"[Thalamus] WARNING: LSA result blocked by Topic Guard {core_topics}")
 
         # Format blocks
         mem_block = f"<relevant-memories>\n" + "\n".join(vetted_memories) + "\n</relevant-memories>" if vetted_memories else ""

@@ -72,11 +72,21 @@ class ToolStatsResponse(BaseModel):
 class SeedRequest(BaseModel):
     urls: List[str]
     agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    content: Optional[str] = None # V1.9 Direct Ingestion Fallback
 
 class SeedResponse(BaseModel):
     status: str
-    urls_processed: int
-    facts_found: int
+    job_id: str # V2.0 Tracking ID
+    urls_submitted: int
+
+class SeedJobStatus(BaseModel):
+    job_id: str
+    agent_id: str
+    status: str
+    urls: List[str]
+    results: Optional[dict] = None
+    created_at: int
+    updated_at: int
 
 class SeedUndoRequest(BaseModel):
     agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")

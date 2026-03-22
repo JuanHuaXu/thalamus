@@ -21,21 +21,23 @@ Universal Memory Middleware for OpenClaw and Cognee.
 
 ## Quick Start
 
-1. **Install Dependencies**:
+1. **Installation & Setup**:
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   chmod +x scripts/*.sh
+   ./scripts/install.sh
    ```
+   *This creates a `.venv`, installs dependencies, and bootstraps `config.json`.*
 
-2. **Configuration**:
-   Copy `config.json.example` to `config.json` and set your `OLLAMA_API_BASE` and `SESSIONS_DIR`.
-
-3. **Run**:
+2. **Service Management**:
    ```bash
-   python -m src.thalamus.main
+   # Start the service
+   ./scripts/service.sh start
+
+   # Check status or logs
+   ./scripts/service.sh status
+   tail -f logs/thalamus.log
    ```
-   Server starts at `http://127.0.0.1:8080`.
+   *Server runs at `http://127.0.0.1:8080`.*
 
 ## API Endpoints
 
