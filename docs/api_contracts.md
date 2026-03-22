@@ -28,17 +28,40 @@ Used in the `before_agent_start` hook to inject graph knowledge into the prompt.
     }
     ```
 
-### B. Knowledge Seeding (Evolutionary)
-Authoritative ingestion of documentation directly into the Graph.
+### B. Knowledge Seeding (Asynchronous)
+Authoritative ingestion of documentation with persistent job tracking.
 -   **Endpoint**: `POST /v1/seed`
 -   **Body**:
     ```json
     {
       "agent_id": "string",
-      "urls": ["string"]
+      "urls": ["string"],
+      "content": "string (Optional: Direct ingestion fallback)"
     }
     ```
--   **Response** (202 Accepted): { "status": "queued", "urls_submitted": 1 }
+-   **Response** (202 Accepted): 
+    ```json
+    { 
+      "status": "queued", 
+      "job_id": "job_40dc6ce3",
+      "urls_submitted": 1 
+    }
+    ```
+
+### B2. Seed Job Status
+Poll for the status of an asynchronous seeding operation.
+-   **Endpoint**: `GET /v1/seed/status`
+-   **Query Params**:
+    -   `job_id`: (string) Unique ID returned from the seed request.
+-   **Response** (200 OK):
+    ```json
+    {
+      "job_id": "string",
+      "status": "COMPLETED | RUNNING | FAILED | PARTIAL",
+      "results": { "success_count": 1, "errors": [] },
+      "created_at": 1774142977
+    }
+    ```
 
 ### C. Resource Consolidation
 Triggers the background synthesis of conflicting or redundant facts.

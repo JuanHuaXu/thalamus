@@ -16,6 +16,7 @@ graph TD
     
     subgraph "Middleware Service (Python/FastAPI)"
         MW["Thalamus Middleware"]
+        TG["Topic Guard (Semantic Vetting)"]
         L1["L1: In-Memory Cache (RAM)"]
         L2["L2: Persistent Cache (SQLite)"]
         Consol["Consolidation Engine"]
@@ -23,18 +24,16 @@ graph TD
     
     subgraph "Data Layer"
         CG["Cognee (Knowledge Graph)"]
-        SL["SQLite (Fact Rep + L2 Cache)"]
+        SL["SQLite (Fact Rep + Job Registry)"]
     end
 
     OC_P -- "JSON API" --> MW
-    MW -- "File Read (Sync)" --> Sessions
-    MW --> L1
-    MW --> L2
+    MW --> TG
+    TG --> L1
+    TG --> L2
     MW -- "Seed / Fetch" --> Web["Web Docs"]
     MW --> CG
     MW --> SL
-    Consol -- "Synthesis / Pruning" --> CG
-    Consol -- "Audit / Decay" --> SL
 ```
 
 ### 📡 Event Pipeline

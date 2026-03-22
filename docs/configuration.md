@@ -37,8 +37,9 @@ The Thalamus middleware is configured via `config.json`. This file governs how t
 ### Crawler (Seeding)
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `crawler_timeout` | `float` | `15.0` | Timeout in seconds for web crawling. |
-| `crawler_user_agent` | `string` | `"Mozilla/5.0 ... Chrome/121.0.0.0 Safari/537.36"` | User agent for documentation extraction. |
+| `crawler_timeout` | `float` | `60.0` | Timeout in seconds (per attempt). |
+| `crawler_user_agent` | `string` | `"Mozilla/5.0 ... Chrome/121.0.0.0 Safari/537.36"` | Masquerade as a modern browser to bypass WAF. |
+| `http1_only` | `bool` | `true` | (Internal) Fixed to true to bypass buggy H2 stacks. |
 
 ## Reloading Config
 Any changes to `config.json` require a restart of the Thalamus middleware process to take effect.
