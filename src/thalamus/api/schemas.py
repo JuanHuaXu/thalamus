@@ -1,4 +1,6 @@
-from typing import List, Optional
+import time
+from enum import Enum
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 class MemoryMessage(BaseModel):
@@ -90,3 +92,45 @@ class SeedJobStatus(BaseModel):
 
 class SeedUndoRequest(BaseModel):
     agent_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+
+# --- LSA Subsystem Schemas (Phase 2) ---
+
+class AbstractionType(str, Enum):
+    SEMANTIC = "semantic"
+    PROCEDURAL = "procedural"
+    EPISODIC = "episodic"
+    RESIDUE = "residue"
+
+class Abstraction(BaseModel):
+    id: str
+    agent_id: str
+    name: str
+    description: str
+    abstraction_type: AbstractionType
+    source_refs: List[str] = Field(default_factory=list)
+    support_count: int = 1
+    confidence: float = 0.5
+    
+    # Structural details
+    invariants: List[str] = Field(default_factory=list)
+    variables: Dict[str, Any] = Field(default_factory=dict)
+    conditions: List[str] = Field(default_factory=list)
+    effects: List[str] = Field(default_factory=list)
+    
+    # Lifecycle & Temporal
+    temporal_scope: Dict[str, Any] = Field(default_factory=dict)
+    succession_links: Dict[str, Any] = Field(default_factory=dict) # e.g. {"next": [...], "prev": [...]}
+    supersedes: Optional[str] = None
+    superseded_by: Optional[str] = None
+    contention_group_id: Optional[str] = None
+    decay_score: float = 1.0
+    
+    created_at: int = Field(default_factory=lambda: int(time.time()))
+    last_updated_at: int = Field(default_factory=lambda: int(time.time()))
+
+class LSATrigger(BaseModel):
+    agent_id: str
+    abstraction_id: Optional[str] = None
+    action: str # e.g. "create", "update", "merge", "split", "decay"
+    message: str
+    payload: Dict[str, Any] = Field(default_factory=dict)

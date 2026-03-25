@@ -6,6 +6,7 @@ import aiosqlite
 import uuid
 from ..providers.cognee import CogneeProvider
 from ..providers.relational import SQLiteRelationalProvider
+from ..core.lsa import LSAEngine
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -16,9 +17,10 @@ class ConsolidationEngine:
     Implements the 'Self-Cleaning' logic of the Evolutionary Knowledge Hub.
     """
     
-    def __init__(self, cognee: CogneeProvider, rdbms: SQLiteRelationalProvider):
+    def __init__(self, cognee: CogneeProvider, rdbms: SQLiteRelationalProvider, lsa: LSAEngine):
         self.cognee = cognee
         self.rdbms = rdbms
+        self.lsa = lsa
 
     async def _llm_synthesize(self, cluster: List[str]) -> str:
         """Calls the configured LLM to synthesize a cluster of facts."""
@@ -73,35 +75,49 @@ class ConsolidationEngine:
         # 2. Simulate Semantic Clustering
         cluster = sorted(active_nodes, key=lambda n: reputations[n]["success"], reverse=True)[:settings.consolidation_cluster_size]
         
-        # 3. LLM Synthesis
-        combined_wisdom = await self._llm_synthesize(cluster)
-        new_node_id = f"wisdom_{uuid.uuid4().hex[:8]}"
-        
-        # We ingest this back to Cognee
-        await self.cognee.add_text(combined_wisdom, dataset_name=f"doc_seed_{agent_id}")
-        
+        # 3. LSA Pattern Detection & Synthesis
+        abstraction = await self.lsa.detect_patterns(agent_id, cluster)
+        if abstraction:
+            abstraction.source_refs = cluster
+            await self.lsa.create_or_update_abstraction(abstraction)
+            new_node_id = abstraction.id
+            summary = abstraction.description
+            
+            # We also ingest a summary text back to Cognee for searchability
+            await self.cognee.add_text(f"Abstraction: {abstraction.name}\n{abstraction.description}", dataset_name=f"doc_seed_{agent_id}")
+        else:
+            # Fallback to simple synthesis if LSA fails
+            combined_wisdom = await self._llm_synthesize(cluster)
+            new_node_id = f"wisdom_{uuid.uuid4().hex[:8]}"
+            await self.cognee.add_text(combined_wisdom, dataset_name=f"doc_seed_{agent_id}")
+            summary = combined_wisdom
+
         # 4. Tombstone old nodes (Temporal Provenance)
         now = int(time.time())
         async with aiosqlite.connect(self.rdbms.db_path) as db:
-            # Add metadata for the new Wisdom node
+            # Add metadata for the new Wisdom/Abstraction node in fact_reputation
             await db.execute("""
-                INSERT INTO fact_reputation (node_id, agent_id, success_count, last_verified_at, status, is_verified)
-                VALUES (?, ?, ?, ?, 'ACTIVE', 1)
-            """, (new_node_id, agent_id, len(cluster), now))
+                INSERT INTO fact_reputation (node_id, agent_id, success_count, last_verified_at, status, is_verified, abstraction_id)
+                VALUES (?, ?, ?, ?, 'ACTIVE', 1, ?)
+            """, (new_node_id, agent_id, len(cluster), now, new_node_id if abstraction else None))
             
-            # Tombstone old nodes
+            # Tombstone old nodes and link them to the abstraction
             for old_node in cluster:
-                await db.execute("UPDATE fact_reputation SET status = 'CONSOLIDATED' WHERE node_id = ? AND agent_id = ?", (old_node, agent_id))
+                await db.execute("""
+                    UPDATE fact_reputation 
+                    SET status = 'CONSOLIDATED', abstraction_id = ? 
+                    WHERE node_id = ? AND agent_id = ?
+                """, (new_node_id if abstraction else None, old_node, agent_id))
             
             # Record edges in consolidation_log
             await db.execute("""
                 INSERT INTO consolidation_log (agent_id, timestamp, nodes_merged_count, new_node_id, summary)
                 VALUES (?, ?, ?, ?, ?)
-            """, (agent_id, now, len(cluster), new_node_id, f"Merged nodes into temporal range block: {combined_wisdom[:50]}..."))
+            """, (agent_id, now, len(cluster), new_node_id, f"LSA Consolidated: {summary[:100]}..."))
             
             await db.commit()
             
-        logger.info(f"[Thalamus] Consolidated {len(cluster)} nodes into {new_node_id}")
+        logger.info(f"[Thalamus] Consolidated {len(cluster)} nodes into {new_node_id} (LSA: {bool(abstraction)})")
         return len(cluster)
 
     async def decay_stale_knowledge(self, agent_id: str, days_threshold: int = 30):

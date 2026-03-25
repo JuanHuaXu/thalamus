@@ -19,7 +19,7 @@
   "crawler_timeout": 60.0,
   "crawler_user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
   "llm_provider_url": "http://10.254.0.1:11434/",
-  "llm_model_name": "qwen3.5:9b",
+  "llm_model_name": "qwen3.5:35b-a3b-q4_K_M",
   "llm_auto_pull": true,
   "max_message_size": 1000000,
   "consolidation_cluster_size": 5

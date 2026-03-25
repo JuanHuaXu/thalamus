@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Ingestion & Sanitization
     max_message_size: int = 1000000 # 1MB limit for single message content
     consolidation_cluster_size: int = 5
+    db_path: str = "thalamus.db"
+    
+    # LSA & Pressure thresholds
+    pressure_threshold_high: float = 0.8
+    pressure_threshold_critical: float = 0.95
 
     @classmethod
     def load(cls):

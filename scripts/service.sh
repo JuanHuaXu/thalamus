@@ -1,4 +1,4 @@
-# Thalamus Service Manager - v1.6
+# Thalamus Service Manager - v2.3 (Restoration Edition)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"

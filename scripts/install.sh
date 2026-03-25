@@ -1,5 +1,5 @@
 #!/bin/bash
-# Thalamus Installation Script - v1.6
+# Thalamus Installation Script - v2.3 (Restoration Edition)
 
 set -e
 

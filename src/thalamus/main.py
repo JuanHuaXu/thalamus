@@ -9,6 +9,7 @@ import httpx
 import time
 import asyncio
 import aiosqlite
+import uuid
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import logging
@@ -18,8 +19,14 @@ from .providers.relational import SQLiteRelationalProvider
 from .providers.crawler import CrawlerProvider
 from .core.config import settings
 from .core.sanitizer import BinarySanitizer
+from .core.lsa import LSAEngine
+from .core.consolidator import ConsolidationEngine
 
 logger = logging.getLogger(__name__)
+cognee = CogneeProvider()
+rdbms = SQLiteRelationalProvider(db_path=settings.db_path)
+lsa = LSAEngine(cognee, rdbms)
+consolidator = ConsolidationEngine(cognee, rdbms, lsa)
 
 # HTTP Bearer Auth
 security = HTTPBearer(auto_error=False)
@@ -43,6 +50,15 @@ async def process_ingestion_queue():
                 for message in request.messages:
                     message.content = BinarySanitizer.sanitize_message(message.content)
                 await cognee.add(request)
+                # Track in RDBMS for LSA/Consolidation
+                for msg in request.messages:
+                    node_id = f"msg_{uuid.uuid4().hex[:8]}"
+                    await rdbms.upsert_fact_reputation(
+                        node_id=node_id,
+                        agent_id=request.agent_id,
+                        success_count=1,
+                        status="ACTIVE"
+                    )
             elif task["type"] == "seed":
                 request = task["request"]
                 dataset_name = f"doc_seed_{request.agent_id}"
@@ -126,9 +142,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Thalamus Middleware", version="0.1.0", dependencies=[Depends(verify_api_key)], lifespan=lifespan)
 
-# Initialize providers
-cognee = CogneeProvider()
-rdbms = SQLiteRelationalProvider()
+# Initialize caches
 
 # In-memory caches
 context_cache = TTLCache(maxsize=1000, ttl=settings.cache_ttl_seconds)
@@ -172,11 +186,31 @@ async def undo_seed(request: SeedUndoRequest):
 
 @app.post("/v1/consolidate")
 async def consolidate_knowledge(agent_id: str = "default"):
-    """Triggers the synthesis of conflicting or redundant facts."""
-    from .core.consolidator import ConsolidationEngine
-    engine = ConsolidationEngine(cognee, rdbms)
-    pruned = await engine.run_consolidation_pass(agent_id)
+    """Triggers the synthesis of conflicting or redundant facts using LSA."""
+    pruned = await consolidator.run_consolidation_pass(agent_id)
     return {"status": "success", "nodes_processed": pruned}
+
+@app.get("/v1/lsa/pressure")
+async def check_lsa_pressure(agent_id: str = "default"):
+    """Returns the current context memory pressure metrics."""
+    # Simulate occupancy metrics
+    reputations = await rdbms.get_fact_reputations(agent_id)
+    active_count = len([n for n, r in reputations.items() if r["status"] == "ACTIVE"])
+    
+    occupancy = active_count / (settings.consolidation_cluster_size * 5) # Heuristic
+    pressure = "NORMAL"
+    if occupancy > settings.pressure_threshold_critical:
+        pressure = "CRITICAL"
+    elif occupancy > settings.pressure_threshold_high:
+        pressure = "HIGH"
+        
+    return {
+        "agent_id": agent_id,
+        "active_facts": active_count,
+        "occupancy_ratio": occupancy,
+        "pressure_state": pressure,
+        "next_consolidate_urgency": "IMMEDIATE" if pressure == "CRITICAL" else "DEFERRED"
+    }
 
 @app.post("/v1/ingest")
 async def ingest_memories(request: IngestRequest):

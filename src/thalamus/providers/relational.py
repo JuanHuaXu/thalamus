@@ -1,9 +1,11 @@
 import aiosqlite
+import json
 import os
 import time
 from typing import List, Optional
 from pydantic import BaseModel
 from ..core.config import settings
+from ..api.schemas import Abstraction
 
 class ToolStat(BaseModel):
     tool_name: str
@@ -12,8 +14,8 @@ class ToolStat(BaseModel):
     blocks: int = 0
 
 class SQLiteRelationalProvider:
-    def __init__(self):
-        self.db_path = "thalamus_rdbms.db" if not settings.sessions_dir else f"{settings.sessions_dir}/thalamus_rdbms.db"
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or ("thalamus_rdbms.db" if not settings.sessions_dir else f"{settings.sessions_dir}/thalamus_rdbms.db")
 
     async def initialize(self):
         """Initializes the database schema asynchronously."""
@@ -83,12 +85,40 @@ class SQLiteRelationalProvider:
                     updated_at INTEGER
                 )
             """)
+
+            # Phase 2: LSA Abstractions
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS abstractions (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT,
+                    name TEXT,
+                    description TEXT,
+                    abstraction_type TEXT,
+                    source_refs TEXT, -- JSON list
+                    support_count INTEGER DEFAULT 1,
+                    confidence REAL DEFAULT 0.5,
+                    invariants TEXT, -- JSON list
+                    variables TEXT, -- JSON dict
+                    conditions TEXT, -- JSON list
+                    effects TEXT, -- JSON list
+                    temporal_scope TEXT, -- JSON dict
+                    succession_links TEXT, -- JSON dict
+                    supersedes TEXT,
+                    superseded_by TEXT,
+                    contention_group_id TEXT,
+                    decay_score REAL DEFAULT 1.0,
+                    created_at INTEGER,
+                    last_updated_at INTEGER
+                )
+            """)
             
             # Column Migration
             cursor = await db.execute("PRAGMA table_info(fact_reputation)")
             columns = [row[1] for row in await cursor.fetchall()]
             if "dynamic_threshold" not in columns:
                 await db.execute("ALTER TABLE fact_reputation ADD COLUMN dynamic_threshold INTEGER DEFAULT 5")
+            if "abstraction_id" not in columns:
+                await db.execute("ALTER TABLE fact_reputation ADD COLUMN abstraction_id TEXT")
             
             await db.commit()
 
@@ -150,6 +180,22 @@ class SQLiteRelationalProvider:
                         status = CASE WHEN failure_count + 1 >= (CASE WHEN fact_reputation.is_verified = 1 THEN ? ELSE ? END) 
                                      OR failure_count + 1 >= dynamic_threshold THEN 'DISPUTED' ELSE status END
                 """, (node_id, agent_id, settings.initial_dynamic_threshold + 1, now, 1 if is_verified else 0, now, settings.verified_dispute_threshold, settings.unverified_dispute_threshold))
+            await db.commit()
+
+    async def upsert_fact_reputation(self, node_id: str, agent_id: str, success_count: int = 1, last_verified_at: Optional[int] = None, status: str = "ACTIVE", is_verified: bool = False, abstraction_id: Optional[str] = None):
+        """Directly upserts a fact reputation record."""
+        now = last_verified_at or int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO fact_reputation (node_id, agent_id, success_count, last_verified_at, status, is_verified, abstraction_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id, agent_id) DO UPDATE SET
+                    success_count = excluded.success_count,
+                    last_verified_at = excluded.last_verified_at,
+                    status = excluded.status,
+                    is_verified = excluded.is_verified,
+                    abstraction_id = excluded.abstraction_id
+            """, (node_id, agent_id, success_count, now, status, 1 if is_verified else 0, abstraction_id))
             await db.commit()
 
     async def get_fact_reputations(self, agent_id: str) -> dict:
@@ -310,3 +356,108 @@ class SQLiteRelationalProvider:
                         "updated_at": row[6]
                     }
                 return None
+
+    # --- LSA Storage Methods ---
+
+    async def upsert_abstraction(self, a: Abstraction):
+        """Creates or updates a structured abstraction node."""
+        now = int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO abstractions (
+                    id, agent_id, name, description, abstraction_type, source_refs,
+                    support_count, confidence, invariants, variables, conditions,
+                    effects, temporal_scope, succession_links, supersedes,
+                    superseded_by, contention_group_id, decay_score,
+                    created_at, last_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    abstraction_type = excluded.abstraction_type,
+                    source_refs = excluded.source_refs,
+                    support_count = excluded.support_count,
+                    confidence = excluded.confidence,
+                    invariants = excluded.invariants,
+                    variables = excluded.variables,
+                    conditions = excluded.conditions,
+                    effects = excluded.effects,
+                    temporal_scope = excluded.temporal_scope,
+                    succession_links = excluded.succession_links,
+                    supersedes = excluded.supersedes,
+                    superseded_by = excluded.superseded_by,
+                    contention_group_id = excluded.contention_group_id,
+                    decay_score = excluded.decay_score,
+                    last_updated_at = excluded.last_updated_at
+            """, (
+                a.id, a.agent_id, a.name, a.description, a.abstraction_type, json.dumps(a.source_refs),
+                a.support_count, a.confidence, json.dumps(a.invariants), json.dumps(a.variables),
+                json.dumps(a.conditions), json.dumps(a.effects), json.dumps(a.temporal_scope),
+                json.dumps(a.succession_links), a.supersedes, a.superseded_by, a.contention_group_id,
+                a.decay_score, a.created_at, now
+            ))
+            await db.commit()
+
+    async def get_abstraction(self, abstraction_id: str) -> Optional[Abstraction]:
+        """Loads a structured abstraction from SQLite."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM abstractions WHERE id = ?", (abstraction_id,)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                
+                return Abstraction(
+                    id=row["id"],
+                    agent_id=row["agent_id"],
+                    name=row["name"],
+                    description=row["description"],
+                    abstraction_type=row["abstraction_type"],
+                    source_refs=json.loads(row["source_refs"]),
+                    support_count=row["support_count"],
+                    confidence=row["confidence"],
+                    invariants=json.loads(row["invariants"]),
+                    variables=json.loads(row["variables"]),
+                    conditions=json.loads(row["conditions"]),
+                    effects=json.loads(row["effects"]),
+                    temporal_scope=json.loads(row["temporal_scope"]),
+                    succession_links=json.loads(row["succession_links"]),
+                    supersedes=row["supersedes"],
+                    superseded_by=row["superseded_by"],
+                    contention_group_id=row["contention_group_id"],
+                    decay_score=row["decay_score"],
+                    created_at=row["created_at"],
+                    last_updated_at=row["last_updated_at"]
+                )
+
+    async def list_abstractions(self, agent_id: str) -> List[Abstraction]:
+        """Lists all abstractions for an agent."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM abstractions WHERE agent_id = ?", (agent_id,)) as cursor:
+                rows = await cursor.fetchall()
+                results = []
+                for row in rows:
+                    results.append(Abstraction(
+                        id=row["id"],
+                        agent_id=row["agent_id"],
+                        name=row["name"],
+                        description=row["description"],
+                        abstraction_type=row["abstraction_type"],
+                        source_refs=json.loads(row["source_refs"]),
+                        support_count=row["support_count"],
+                        confidence=row["confidence"],
+                        invariants=json.loads(row["invariants"]),
+                        variables=json.loads(row["variables"]),
+                        conditions=json.loads(row["conditions"]),
+                        effects=json.loads(row["effects"]),
+                        temporal_scope=json.loads(row["temporal_scope"]),
+                        succession_links=json.loads(row["succession_links"]),
+                        supersedes=row["supersedes"],
+                        superseded_by=row["superseded_by"],
+                        contention_group_id=row["contention_group_id"],
+                        decay_score=row["decay_score"],
+                        created_at=row["created_at"],
+                        last_updated_at=row["last_updated_at"]
+                    ))
+                return results
