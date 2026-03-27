@@ -111,8 +111,50 @@ class SQLiteRelationalProvider:
                     last_updated_at INTEGER
                 )
             """)
+
+            # V2.3 Pulse Goal Storage
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS pulse_goals (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT,
+                    description TEXT,
+                    priority INTEGER DEFAULT 5,
+                    status TEXT DEFAULT 'pending',
+                    parent_id TEXT,
+                    attempts INTEGER DEFAULT 0,
+                    verification_level TEXT,
+                    last_error TEXT,
+                    conversation_id TEXT,
+                    channel_id TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                )
+            """)
+
+            # Pulse Drive State
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS drive_state (
+                    agent_id TEXT PRIMARY KEY,
+                    energy REAL DEFAULT 1.0,
+                    curiosity REAL DEFAULT 0.3,
+                    sociability REAL DEFAULT 0.3,
+                    updated_at INTEGER
+                )
+            """)
             
             # Column Migration
+            cursor = await db.execute("PRAGMA table_info(pulse_goals)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "last_error" not in columns:
+                print("[Thalamus] Migrating pulse_goals: adding last_error column", flush=True)
+                await db.execute("ALTER TABLE pulse_goals ADD COLUMN last_error TEXT")
+            if "conversation_id" not in columns:
+                print("[Thalamus] Migrating pulse_goals: adding conversation_id column", flush=True)
+                await db.execute("ALTER TABLE pulse_goals ADD COLUMN conversation_id TEXT")
+            if "channel_id" not in columns:
+                print("[Thalamus] Migrating pulse_goals: adding channel_id column", flush=True)
+                await db.execute("ALTER TABLE pulse_goals ADD COLUMN channel_id TEXT")
+            await db.commit()
             cursor = await db.execute("PRAGMA table_info(fact_reputation)")
             columns = [row[1] for row in await cursor.fetchall()]
             if "dynamic_threshold" not in columns:
@@ -461,3 +503,185 @@ class SQLiteRelationalProvider:
                         last_updated_at=row["last_updated_at"]
                     ))
                 return results
+
+    async def get_all_invariants(self, agent_id: str) -> List[str]:
+        """Aggregates all unique invariant strings from an agent's abstractions."""
+        print(f"[Thalamus RDBMS] Fetching invariants for {agent_id} from {self.db_path}", flush=True)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT invariants FROM abstractions WHERE agent_id = ?", (agent_id,)) as cursor:
+                rows = await cursor.fetchall()
+                all_invariants = set()
+                for row in rows:
+                    if row["invariants"]:
+                        items = json.loads(row["invariants"])
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, str):
+                                    all_invariants.add(item)
+                return sorted(list(all_invariants))
+
+    # --- Pulse Goal Storage Methods ---
+
+    async def upsert_pulse_goal(self, goal: dict, agent_id: str):
+        """Atomic upsert for Pulse goals in the RDBMS."""
+        now = int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO pulse_goals (
+                    id, agent_id, description, priority, status, 
+                    parent_id, attempts, verification_level, last_error,
+                    conversation_id, channel_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    description = excluded.description,
+                    priority = excluded.priority,
+                    status = excluded.status,
+                    parent_id = excluded.parent_id,
+                    attempts = excluded.attempts,
+                    verification_level = excluded.verification_level,
+                    last_error = excluded.last_error,
+                    conversation_id = excluded.conversation_id,
+                    channel_id = excluded.channel_id,
+                    updated_at = excluded.updated_at
+            """, (
+                goal["id"], agent_id, goal["description"], goal.get("priority", 5),
+                goal.get("status", "pending"), goal.get("parentId"), 
+                goal.get("attempts", 0), goal.get("verificationLevel"),
+                goal.get("lastError"),
+                goal.get("conversationId"), goal.get("channelId"),
+                now, now
+            ))
+            await db.commit()
+
+    async def get_pulse_goals(self, agent_id: str) -> List[dict]:
+        """Fetch all goals for an agent directly from the RDBMS."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM pulse_goals WHERE agent_id = ? ORDER BY created_at DESC", (agent_id,)) as cursor:
+                rows = await cursor.fetchall()
+                results = []
+                for row in rows:
+                    results.append({
+                        "id": row["id"],
+                        "description": row["description"],
+                        "priority": row["priority"],
+                        "status": row["status"],
+                        "parentId": row["parent_id"],
+                        "attempts": row["attempts"],
+                        "verificationLevel": row["verification_level"],
+                        "lastError": row["last_error"],
+                        "conversationId": row["conversation_id"],
+                        "channelId": row["channel_id"]
+                    })
+                return results
+
+    async def get_pulse_goal_by_id(self, goal_id: str) -> Optional[dict]:
+        """Fetch a specific goal by ID."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM pulse_goals WHERE id = ?", (goal_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "id": row["id"],
+                        "agent_id": row["agent_id"],
+                        "description": row["description"],
+                        "priority": row["priority"],
+                        "status": row["status"],
+                        "parentId": row["parent_id"],
+                        "attempts": row["attempts"],
+                        "verificationLevel": row["verification_level"],
+                        "lastError": row["last_error"],
+                        "conversationId": row["conversation_id"],
+                        "channelId": row["channel_id"]
+                    }
+                return None
+
+    # --- Pulse Goal Lifecycle Methods ---
+
+    async def evict_stale_goals(self, agent_id: str, max_age_seconds: int = 86400) -> int:
+        """Delete pending goals older than max_age_seconds. Returns count of evicted rows."""
+        cutoff = int(time.time()) - max_age_seconds
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM pulse_goals WHERE agent_id = ? AND status = 'pending' AND created_at < ?",
+                (agent_id, cutoff)
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    async def deduplicate_goals(self, agent_id: str) -> int:
+        """
+        Find groups of pending goals with identical description text,
+        keep only the newest in each group, delete the rest.
+        Returns count of deduplicated (deleted) rows.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Find duplicate descriptions that have more than one pending goal
+            cursor = await db.execute("""
+                DELETE FROM pulse_goals WHERE id IN (
+                    SELECT id FROM pulse_goals p
+                    WHERE agent_id = ? AND status = 'pending'
+                    AND EXISTS (
+                        SELECT 1 FROM pulse_goals p2
+                        WHERE p2.agent_id = p.agent_id
+                        AND p2.description = p.description
+                        AND p2.status = 'pending'
+                        AND p2.created_at > p.created_at
+                    )
+                )
+            """, (agent_id,))
+            await db.commit()
+            return cursor.rowcount
+
+    async def compact_completed_goals(self, agent_id: str, max_age_seconds: int = 604800) -> int:
+        """Delete completed and terminal_failure goals older than max_age_seconds."""
+        cutoff = int(time.time()) - max_age_seconds
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM pulse_goals WHERE agent_id = ? AND status IN ('completed', 'terminal_failure') AND created_at < ?",
+                (agent_id, cutoff)
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    # --- Pulse Drive State Methods ---
+
+    async def get_drive_state(self, agent_id: str) -> dict:
+        """Returns the drive state for an agent. Auto-seeds defaults if no row exists."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM drive_state WHERE agent_id = ?", (agent_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "energy": row["energy"],
+                        "curiosity": row["curiosity"],
+                        "sociability": row["sociability"],
+                        "lastUpdate": row["updated_at"]
+                    }
+            # Auto-seed defaults
+            now = int(time.time())
+            await db.execute(
+                "INSERT INTO drive_state (agent_id, energy, curiosity, sociability, updated_at) VALUES (?, 1.0, 0.3, 0.3, ?)",
+                (agent_id, now)
+            )
+            await db.commit()
+            return {"energy": 1.0, "curiosity": 0.3, "sociability": 0.3, "lastUpdate": now}
+
+    async def update_drive_state(self, agent_id: str, energy: float, curiosity: float, sociability: float) -> None:
+        """Upserts drive state values for an agent."""
+        now = int(time.time())
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO drive_state (agent_id, energy, curiosity, sociability, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    energy = excluded.energy,
+                    curiosity = excluded.curiosity,
+                    sociability = excluded.sociability,
+                    updated_at = excluded.updated_at
+            """, (agent_id, energy, curiosity, sociability, now))
+            await db.commit()

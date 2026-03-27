@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     pressure_threshold_high: float = 0.8
     pressure_threshold_critical: float = 0.95
 
+    # Pulse Goal Lifecycle
+    pulse_goal_ttl_seconds: int = 86400        # 24h — pending goals older than this are evicted
+    pulse_completed_ttl_seconds: int = 604800  # 7 days — completed/failed goals older than this are purged
+    pulse_dedup_enabled: bool = True
+
     @classmethod
     def load(cls):
         # Look for config.json in the project root (3 levels up from this file)

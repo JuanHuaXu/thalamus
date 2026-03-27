@@ -24,7 +24,7 @@ from .core.consolidator import ConsolidationEngine
 
 logger = logging.getLogger(__name__)
 cognee = CogneeProvider()
-rdbms = SQLiteRelationalProvider(db_path=settings.db_path)
+rdbms = SQLiteRelationalProvider()
 lsa = LSAEngine(cognee, rdbms)
 consolidator = ConsolidationEngine(cognee, rdbms, lsa)
 
@@ -186,9 +186,26 @@ async def undo_seed(request: SeedUndoRequest):
 
 @app.post("/v1/consolidate")
 async def consolidate_knowledge(agent_id: str = "default"):
-    """Triggers the synthesis of conflicting or redundant facts using LSA."""
+    """Triggers the synthesis of conflicting or redundant facts using LSA, plus goal lifecycle cleanup."""
     pruned = await consolidator.run_consolidation_pass(agent_id)
-    return {"status": "success", "nodes_processed": pruned}
+    
+    # Piggyback: Goal Lifecycle Cleanup
+    goal_evicted = await rdbms.evict_stale_goals(agent_id, settings.pulse_goal_ttl_seconds)
+    goal_deduped = 0
+    if settings.pulse_dedup_enabled:
+        goal_deduped = await rdbms.deduplicate_goals(agent_id)
+    goal_compacted = await rdbms.compact_completed_goals(agent_id, settings.pulse_completed_ttl_seconds)
+    
+    if goal_evicted + goal_deduped + goal_compacted > 0:
+        print(f"[Thalamus] Goal lifecycle: evicted={goal_evicted} deduped={goal_deduped} compacted={goal_compacted}")
+    
+    return {
+        "status": "success",
+        "nodes_processed": pruned,
+        "goals_evicted": goal_evicted,
+        "goals_deduped": goal_deduped,
+        "goals_compacted": goal_compacted
+    }
 
 @app.get("/v1/lsa/pressure")
 async def check_lsa_pressure(agent_id: str = "default"):
@@ -212,6 +229,14 @@ async def check_lsa_pressure(agent_id: str = "default"):
         "next_consolidate_urgency": "IMMEDIATE" if pressure == "CRITICAL" else "DEFERRED"
     }
 
+@app.get("/v1/lsa/invariants")
+async def get_lsa_invariants(agent_id: str = "default"):
+    """Fetch all unique invariant strings for an agent."""
+    try:
+        return await rdbms.get_all_invariants(agent_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/v1/ingest")
 async def ingest_memories(request: IngestRequest):
     """Ingests messages and triggers the automated feedback loop (Scientific Method)."""
@@ -232,7 +257,18 @@ async def ingest_memories(request: IngestRequest):
                     await rdbms.record_fact_interaction(node_id, request.agent_id, success=is_success, is_verified=request.is_verified)
                 last_served_nodes.pop(request.agent_id, None)
 
-        # 3. Cache Invalidation
+        # 3. AUTO-GOAL INGESTION (V2.3)
+        for message in request.messages:
+            if message.content.startswith("PROPOSE GOAL:"):
+                try:
+                    goal_json = message.content.replace("PROPOSE GOAL:", "").strip()
+                    goal_data = json.loads(goal_json)
+                    await rdbms.upsert_pulse_goal(goal_data, request.agent_id)
+                    print(f"[Thalamus] Auto-ingested Pulse goal: {goal_data.get('id')}")
+                except Exception as g_err:
+                    print(f"[Thalamus] Failed to auto-ingest Pulse goal: {g_err}")
+
+        # 4. Cache Invalidation
         keys_to_del = [k for k in context_cache.keys() if k.startswith(f"{request.agent_id}:")]
         for k in keys_to_del:
             del context_cache[k]
@@ -623,6 +659,75 @@ async def sync_sessions(request: SyncRequest):
             sessions_scanned=sessions_scanned
         )
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Pulse Goal Endpoints ---
+
+@app.get("/v1/pulse/goals")
+async def get_pulse_goals(agent_id: str = "default"):
+    """Fetch all goals for an agent directly from the RDBMS."""
+    try:
+        return await rdbms.get_pulse_goals(agent_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/pulse/goals")
+async def upsert_pulse_goal(goal: dict, agent_id: str = "default"):
+    """Manually upsert a goal into the RDBMS."""
+    try:
+        if "id" not in goal:
+            goal["id"] = f"goal_{int(time.time() * 1000)}"
+        await rdbms.upsert_pulse_goal(goal, agent_id)
+        return {"status": "success", "id": goal["id"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/pulse/goals/evict")
+async def evict_pulse_goals(agent_id: str = "default"):
+    """Triggers TTL eviction, deduplication, and completed-goal compaction."""
+    try:
+        evicted = await rdbms.evict_stale_goals(agent_id, settings.pulse_goal_ttl_seconds)
+        deduped = 0
+        if settings.pulse_dedup_enabled:
+            deduped = await rdbms.deduplicate_goals(agent_id)
+        compacted = await rdbms.compact_completed_goals(agent_id, settings.pulse_completed_ttl_seconds)
+        
+        total = evicted + deduped + compacted
+        if total > 0:
+            print(f"[Thalamus] Goal eviction: evicted={evicted} deduped={deduped} compacted={compacted}")
+        
+        return {
+            "status": "success",
+            "evicted": evicted,
+            "deduped": deduped,
+            "compacted": compacted,
+            "total_removed": total
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/pulse/drives")
+async def get_pulse_drives(agent_id: str = "default"):
+    """Returns the persisted drive state for an agent."""
+    try:
+        return await rdbms.get_drive_state(agent_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/v1/pulse/drives")
+async def update_pulse_drives(body: dict, agent_id: str = "default"):
+    """Updates drive state values for an agent."""
+    try:
+        energy = float(body.get("energy", 1.0))
+        curiosity = float(body.get("curiosity", 0.3))
+        sociability = float(body.get("sociability", 0.3))
+        # Clamp values to [0, 1]
+        energy = max(0.0, min(1.0, energy))
+        curiosity = max(0.0, min(1.0, curiosity))
+        sociability = max(0.0, min(1.0, sociability))
+        await rdbms.update_drive_state(agent_id, energy, curiosity, sociability)
+        return {"status": "success", "energy": energy, "curiosity": curiosity, "sociability": sociability}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
